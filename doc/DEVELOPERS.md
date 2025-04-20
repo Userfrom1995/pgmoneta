@@ -89,6 +89,17 @@ Download dependencies
     dnf install graphviz doxygen
     ```
 
+#### Generating Code Coverage
+
+Code coverage is automatically enabled if both `gcov` and `gcovr` are installed on your system.  
+To install the required tools, run:
+
+```sh
+dnf install gcovr gcc
+```
+When these tools are present, the build system will detect them and enable code coverage generation automatically during the build process.  
+
+
 ### Build
 
 ``` sh

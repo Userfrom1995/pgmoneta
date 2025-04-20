@@ -370,6 +370,8 @@ initialize_cluster() {
    fi
    run_as_postgres "$PGCTL_PATH -D $DATA_DIRECTORY -l $PGCTL_LOG_FILE start"
    if [ $? -ne 0 ]; then
+      echo "PostgreSQL failed to start. Printing log:"
+      cat $PGCTL_LOG_FILE
       clean
       exit 1
    fi
@@ -408,7 +410,8 @@ initialize_cluster() {
    else
       echo "create user myuser ... ok"
    fi
-   err_out=$(psql -h /tmp -p $PORT -U $PSQL_USER -d postgres -c "CREATE DATABASE mydb WITH OWNER myuser ENCODING 'UTF8';" 2>&1)
+   # Change it to:
+   err_out=$(psql -h /tmp -p $PORT -U $PSQL_USER -d postgres -c "CREATE DATABASE mydb WITH OWNER myuser ENCODING 'UTF8' TEMPLATE template0;" 2>&1)
    if [ $? -ne 0 ]; then
       echo "create database mydb with owner myuser ... $err_out"
       stop_pgctl
@@ -540,6 +543,26 @@ execute_testcases() {
    echo ""
 }
 
+generate_coverage_report() {
+   if command -v gcov >/dev/null 2>&1 && command -v gcovr >/dev/null 2>&1; then
+      echo "Generating coverage report with gcovr..."
+      COVERAGE_DIR="./coverage"
+      BUILD_DIR="."
+      SRC_DIR="../src"
+      mkdir -p "$COVERAGE_DIR"
+      if [ -d "$BUILD_DIR" ]; then
+         gcovr -r "$SRC_DIR" --object-directory "$BUILD_DIR" --html --html-details -o "$COVERAGE_DIR/index.html"
+         gcovr -r "$SRC_DIR" --object-directory "$BUILD_DIR" > "$COVERAGE_DIR/summary.txt"
+         echo "Coverage report generated at $COVERAGE_DIR"
+      else
+         echo "Build directory $BUILD_DIR does not exist, skipping coverage report."
+      fi
+   else
+      echo "gcov or gcovr not found, skipping coverage report."
+   fi
+}
+
+
 execute_pgmoneta_ext_suite() {
    echo -e "\e[34mExecute pgmoneta_ext Testcases \e[0m"
    set +e
@@ -599,9 +622,11 @@ run_tests() {
       pgmoneta_initialize_configuration
       # execute_pgmoneta_ext_suite Uncomment when pgmoneta_ext is enabled
       execute_testcases
+      
 
       # clean cluster
       clean
+      generate_coverage_report
    else
       echo "user should be $FILE_OWNER"
       exit 1

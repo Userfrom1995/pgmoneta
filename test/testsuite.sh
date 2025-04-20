@@ -370,6 +370,8 @@ initialize_cluster() {
    fi
    run_as_postgres "$PGCTL_PATH -D $DATA_DIRECTORY -l $PGCTL_LOG_FILE start"
    if [ $? -ne 0 ]; then
+      echo "PostgreSQL failed to start. Printing log:"
+      cat $PGCTL_LOG_FILE
       clean
       exit 1
    fi
@@ -408,7 +410,8 @@ initialize_cluster() {
    else
       echo "create user myuser ... ok"
    fi
-   err_out=$(psql -h /tmp -p $PORT -U $PSQL_USER -d postgres -c "CREATE DATABASE mydb WITH OWNER myuser ENCODING 'UTF8';" 2>&1)
+   # Change it to:
+   err_out=$(psql -h /tmp -p $PORT -U $PSQL_USER -d postgres -c "CREATE DATABASE mydb WITH OWNER myuser ENCODING 'UTF8' TEMPLATE template0;" 2>&1)
    if [ $? -ne 0 ]; then
       echo "create database mydb with owner myuser ... $err_out"
       stop_pgctl

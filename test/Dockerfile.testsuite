@@ -1,0 +1,138 @@
+#
+# Copyright (C) 2025 The pgmoneta community
+#
+# Redistribution and use in source and binary forms, with or without modification,
+# are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this list
+# of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice, this
+# list of conditions and the following disclaimer in the documentation and/or other
+# materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its contributors may
+# be used to endorse or promote products derived from this software without specific
+# prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY
+# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+# OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+# THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+# OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+# TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+FROM rockylinux:9
+
+RUN rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm && \
+    dnf -y upgrade && \
+    dnf install -y dnf-plugins-core && \
+    dnf config-manager --set-enabled crb && \
+    dnf makecache && \
+    dnf install -y \
+        git \
+        gcc \
+        cmake \
+        make \
+        postgresql-devel \
+        zlib \
+        zlib-devel \
+        zstd \
+        libzstd-devel \
+        lz4 \
+        lz4-devel \
+        bzip2 \
+        bzip2-devel \
+        libpq \
+        libpq-devel \
+        libev-devel \
+        python3-docutils \
+        pandoc \
+        texlive \
+        doxygen \
+        graphviz \
+        openssl-devel \
+        libatomic \
+        libyaml-devel \
+        libarchive \
+        libarchive-devel \
+        libssh-devel \
+        libcurl-devel \
+        libasan \
+        libubsan \
+        lcov \ 
+        yaml-cpp-devel \
+        iproute \
+        check-devel && \
+    dnf clean all
+    
+    
+# Install gcovr (Python-based, so use pip)
+RUN dnf install -y python3-pip && pip3 install gcovr
+    
+RUN dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm && \
+    dnf -y update && \
+    dnf install -y postgresql17-server \
+        postgresql17-contrib \
+        libpq5 \
+        libev \
+        libatomic \
+        libssh
+
+
+# After installing PostgreSQL, add:
+ENV PATH="/usr/pgsql-17/bin:${PATH}"
+RUN mkdir -p /var/lib/postgresql/data && chown -R postgres:postgres /var/lib/postgresql/data
+
+
+
+
+# Copy source code
+COPY --chown=postgres:postgres . /pgmoneta
+
+
+USER postgres
+RUN rm -rf /pgmoneta/build && mkdir -p /pgmoneta/build  /pgmoneta/build/log
+
+WORKDIR /pgmoneta/build
+
+# Enable coverage and configure the build
+RUN cmake ..
+
+
+# Build the project
+RUN make -j$(nproc)
+
+
+# Add script to find and use ASan library correctly
+RUN echo '#!/bin/bash\n\
+ASAN_LIB=$(gcc -print-file-name=libasan.so)\n\
+if [ -n "$ASAN_LIB" ] && [ -f "$ASAN_LIB" ]; then\n\
+  echo "Using ASan from $ASAN_LIB"\n\
+  export LD_PRELOAD=$ASAN_LIB\n\
+  export ASAN_OPTIONS=detect_leaks=0:verify_asan_link_order=0\n\
+fi\n\
+exec "$@"' > /pgmoneta/run_with_asan.sh && \
+chmod +x /pgmoneta/run_with_asan.sh
+
+# Use this wrapper for running tests
+
+CMD ["/bin/bash"]
+
+
+
+    
+
+
+
+
+
+
+
+
+
+
+

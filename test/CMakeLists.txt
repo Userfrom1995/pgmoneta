@@ -74,23 +74,13 @@ endif()
 
 if(container)
 
-  add_test(test_version_13_rocky9 "${CMAKE_CURRENT_SOURCE_DIR}/../test/testsuite.sh" "${CMAKE_CURRENT_SOURCE_DIR}/../test" "Dockerfile.rocky9" 13)
-  add_test(test_version_14_rocky9 "${CMAKE_CURRENT_SOURCE_DIR}/../test/testsuite.sh" "${CMAKE_CURRENT_SOURCE_DIR}/../test" "Dockerfile.rocky9" 14)
-  add_test(test_version_15_rocky9 "${CMAKE_CURRENT_SOURCE_DIR}/../test/testsuite.sh" "${CMAKE_CURRENT_SOURCE_DIR}/../test" "Dockerfile.rocky9" 15)
-  add_test(test_version_16_rocky9 "${CMAKE_CURRENT_SOURCE_DIR}/../test/testsuite.sh" "${CMAKE_CURRENT_SOURCE_DIR}/../test" "Dockerfile.rocky9" 16)
+add_test(NAME container_test
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_docker_tests.sh
+           WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
-  set(failRegex
-      "Failures: [1-9][0-9]*"
-  )
+set_property(TEST container_test
+             PROPERTY FAIL_REGULAR_EXPRESSION "Failures: [1-9][0-9]*")
 
-  set_property (TEST test_version_13_rocky9
-                PROPERTY FAIL_REGULAR_EXPRESSION "${failRegex}")
-  set_property (TEST test_version_14_rocky9
-                PROPERTY FAIL_REGULAR_EXPRESSION "${failRegex}")
-  set_property (TEST test_version_15_rocky9
-                PROPERTY FAIL_REGULAR_EXPRESSION "${failRegex}")
-  set_property (TEST test_version_16_rocky9
-                PROPERTY FAIL_REGULAR_EXPRESSION "${failRegex}")
 endif()
 
 configure_file(

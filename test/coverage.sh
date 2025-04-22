@@ -63,7 +63,6 @@ if ! $CONTAINER_ENGINE build -f "$DOCKERFILE" -t "$IMAGE_NAME" .; then
 fi
 
 echo " Running tests and generating coverage in container: $CONTAINER_NAME"
-echo " Running tests and generating coverage in container: $CONTAINER_NAME"
 
 $CONTAINER_ENGINE run --name "$CONTAINER_NAME" "$IMAGE_NAME" bash -c "
   set -e
@@ -73,10 +72,9 @@ $CONTAINER_ENGINE run --name "$CONTAINER_NAME" "$IMAGE_NAME" bash -c "
   mkdir -p /pgmoneta/build/coverage
   echo ' Listing .gcda/.gcno files:'
   find . -name '*.gcda' -o -name '*.gcno'
-  cd /pgmoneta/
-  gcovr -r ./src --object-directory . --html --html-details -o ./build/coverage/index.html
-  gcovr -r ./src --object-directory . > ./build/coverage/summary.txt
-  gcovr -r ./src --object-directory . --xml -o ./build/coverage/coverage.xml
+  gcovr -r /pgmoneta/src --object-directory . --html --html-details -o coverage/index.html
+  gcovr -r /pgmoneta/src --object-directory . > coverage/summary.txt
+  gcovr -r /pgmoneta/src --object-directory . --xml -o coverage/coverage.xml
   echo ' Coverage reports generated in /pgmoneta/build/coverage'
 "
 

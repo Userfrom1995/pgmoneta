@@ -62,16 +62,12 @@ RUN rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.
         libssh-devel \
         libcurl-devel \
         libasan \
-        libubsan \
         lcov \ 
         yaml-cpp-devel \
-        iproute \
         check-devel && \
     dnf clean all
     
-    
-# Install gcovr (Python-based, so use pip)
-RUN dnf install -y python3-pip && pip3 install gcovr
+
     
 RUN dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm && \
     dnf -y update && \
@@ -87,45 +83,20 @@ RUN dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x
 ENV PATH="/usr/pgsql-17/bin:${PATH}"
 RUN mkdir -p /var/lib/postgresql/data && chown -R postgres:postgres /var/lib/postgresql/data
 
-
-
-
 # Copy source code
 COPY --chown=postgres:postgres . /pgmoneta
-
 
 USER postgres
 RUN rm -rf /pgmoneta/build && mkdir -p /pgmoneta/build  /pgmoneta/build/log
 
 WORKDIR /pgmoneta/build
 
-# Enable coverage and configure the build
-RUN cmake ..
-
-
-# Build the project
-RUN make -j$(nproc)
-
-
-# Add script to find and use ASan library correctly
-RUN echo '#!/bin/bash\n\
-ASAN_LIB=$(gcc -print-file-name=libasan.so)\n\
-if [ -n "$ASAN_LIB" ] && [ -f "$ASAN_LIB" ]; then\n\
-  echo "Using ASan from $ASAN_LIB"\n\
-  export LD_PRELOAD=$ASAN_LIB\n\
-  export ASAN_OPTIONS=detect_leaks=0:verify_asan_link_order=0\n\
-fi\n\
-exec "$@"' > /pgmoneta/run_with_asan.sh && \
-chmod +x /pgmoneta/run_with_asan.sh
-
-# Use this wrapper for running tests
-
+RUN cmake -DENABLE_COVERAGE=ON .. && make -j$(nproc)
 CMD ["/bin/bash"]
 
 
 
     
-
 
 
 

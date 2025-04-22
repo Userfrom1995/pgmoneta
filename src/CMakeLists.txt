@@ -35,6 +35,23 @@ if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     ${THREAD_INCLUDE_DIRS}
   )
 
+  # === MOVE COVERAGE FLAGS HERE, AFTER ALL OTHER set(CMAKE_C_FLAGS ...) ===
+  if(ENABLE_COVERAGE)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --coverage -O0 -g")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
+    message(STATUS "Building with coverage enabled")
+  else()
+    message(STATUS "Building without coverage")
+  endif()
+
+  # Add a custom target for coverage if in container
+  if(ENABLE_COVERAGE AND container)
+    add_custom_target(coverage
+      COMMAND ${CMAKE_COMMAND} -E env bash ${CMAKE_SOURCE_DIR}/test/coverage.sh
+      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+      COMMENT "Running coverage script"
+    )
+  endif()
   #
   # Library directories
   #

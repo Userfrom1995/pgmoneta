@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.14)
 
+option(ENABLE_COVERAGE "Enable code coverage" OFF)
+
 set(VERSION_MAJOR "0")
 set(VERSION_MINOR "16")
 set(VERSION_PATCH "0")
@@ -254,19 +256,8 @@ endif()
 
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/src/")
 
-add_subdirectory(doc)
-add_subdirectory(src)
-add_subdirectory(test)
-
-
-
-# Always default to OFF
-set(ENABLE_COVERAGE OFF)
-
-# Find gcov and gcovr executables
 find_program(GCOV_PATH gcov)
 find_program(GCOVR_PATH gcovr)
-
 # Enable coverage if both gcov and gcovr are found
 if(GCOV_PATH AND GCOVR_PATH)
   set(ENABLE_COVERAGE ON)
@@ -275,21 +266,19 @@ else()
   message(WARNING "Coverage tools not found: Code coverage SKIPPED")
 endif()
 
-# Apply coverage flags if enabled
-if(ENABLE_COVERAGE)
-  add_compile_options(--coverage -O0 -g)
-  add_link_options(--coverage)
-  message(STATUS "Building with coverage enabled")
-else()
-  message(STATUS "Building without coverage")
-endif()
 
-# Add a custom target for coverage if in container
-if(ENABLE_COVERAGE AND container)
-  add_custom_target(coverage
-    COMMAND ${CMAKE_COMMAND} -E env bash ${CMAKE_SOURCE_DIR}/test/coverage.sh
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Running coverage script"
-  )
-endif()
+
+add_subdirectory(doc)
+add_subdirectory(src)
+add_subdirectory(test)
+
+
+
+
+
+
+
+
+
+
 

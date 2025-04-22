@@ -26,21 +26,12 @@
 # TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+
 set -euo pipefail
 
 # Go to the root of the project (script is in test/, go one level up)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
-
-# Detect container engine
-if command -v docker &> /dev/null; then
-  CONTAINER_ENGINE="docker"
-elif command -v podman &> /dev/null; then
-  CONTAINER_ENGINE="podman"
-else
-  echo "Error: Neither Docker nor Podman is installed."
-  exit 1
-fi
 
 # Variables
 IMAGE_NAME="pgmoneta-test"
@@ -50,29 +41,25 @@ LOG_DIR="./build/log"
 
 # Function to cleanup container
 echo " Cleaning up old container..."
-if $CONTAINER_ENGINE ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}\$"; then
-    $CONTAINER_ENGINE rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}\$"; then
+    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 fi
 
-echo " Building $CONTAINER_ENGINE image: $IMAGE_NAME"
-if ! $CONTAINER_ENGINE build -f "$DOCKERFILE" -t "$IMAGE_NAME" .; then
-  echo " Build failed."
+
+echo " Building Docker image: $IMAGE_NAME"
+if ! docker build -f "$DOCKERFILE" -t "$IMAGE_NAME" .; then
+  echo "❌ Docker build failed."
   exit 1
 fi
 
-
-echo " Running tests in $CONTAINER_ENGINE container: $CONTAINER_NAME"
-if ! $CONTAINER_ENGINE run --name "$CONTAINER_NAME" "$IMAGE_NAME" bash -c "
-  cd /pgmoneta/build && ./testsuite.sh
-"; then
-  echo " Test run in container exited with non-zero status (possibly expected for test failures)"
+echo " Running tests in Docker container: $CONTAINER_NAME"
+if ! docker run --name "$CONTAINER_NAME" "$IMAGE_NAME" bash -c "cd /pgmoneta/build && ./testsuite.sh"; then
+  echo "⚠️ Test run in container exited with non-zero status (possibly expected for test failures)"
 fi
-
-
 
 echo " Copying logs from container to host: $LOG_DIR"
 mkdir -p "$LOG_DIR"
-if ! $CONTAINER_ENGINE cp "$CONTAINER_NAME:/pgmoneta/build/log/." "$LOG_DIR"; then
+if ! docker cp "$CONTAINER_NAME:/pgmoneta/build/log/." "$LOG_DIR"; then
   echo " Failed to copy logs from container."
   exit 1
 fi

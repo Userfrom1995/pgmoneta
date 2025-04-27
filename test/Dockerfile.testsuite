@@ -25,88 +25,230 @@
 # TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-FROM rockylinux:9
+# FROM rockylinux:9
 
-RUN rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm && \
-    dnf -y upgrade && \
+# RUN rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm && \
+#     dnf -y upgrade && \
+#     dnf install -y dnf-plugins-core && \
+#     /usr/bin/crb enable && \
+#     dnf makecache && \
+#     dnf install -y \
+#         git \
+#         gcc \
+#         cmake \
+#         make \
+#         postgresql-devel \
+#         zlib \
+#         zlib-devel \
+#         zstd \
+#         libzstd-devel \
+#         lz4 \
+#         lz4-devel \
+#         bzip2 \
+#         bzip2-devel \
+#         libpq \
+#         libpq-devel \
+#         libev-devel \
+#         python3-docutils \
+#         pandoc \
+#         texlive \
+#         doxygen \
+#         graphviz \
+#         openssl-devel \
+#         libatomic \
+#         libyaml-devel \
+#         libarchive \
+#         libarchive-devel \
+#         libssh-devel \
+#         libcurl-devel \
+#         libasan \
+#         libasan-static \
+#         libubsan \
+#         lcov \ 
+#         yaml-cpp-devel \
+#         check-devel && \
+#     dnf clean all
+    
+
+    
+# RUN dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm && \
+#     dnf -y update && \
+#     dnf install -y postgresql17-server \
+#         postgresql17-contrib \
+#         libpq5 \
+#         libev \
+#         libatomic \
+#         libssh
+
+# RUN dnf -y install python3-pip && \
+#     pip3 install gcovr 
+
+
+# # After installing PostgreSQL, add:
+# ENV PATH="/usr/pgsql-17/bin:${PATH}"
+# RUN mkdir -p /var/lib/postgresql/data && chown -R postgres:postgres /var/lib/postgresql/data
+
+# # Copy source code
+# COPY --chown=postgres:postgres . /pgmoneta
+
+# USER postgres
+# RUN rm -rf /pgmoneta/build && mkdir -p /pgmoneta/build  /pgmoneta/build/log
+
+# WORKDIR /pgmoneta/build
+
+# RUN cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug .. && make -j$(nproc)
+# CMD ["/bin/bash"]
+
+# FROM rockylinux:9
+
+# # Set up repositories in correct order - FIX THE CRB COMMAND
+# RUN dnf -y upgrade && \
+#     dnf install -y dnf-plugins-core && \
+#     dnf config-manager --set-enabled crb && \
+#     dnf install -y epel-release && \
+#     dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm && \
+#     dnf -qy module disable postgresql && \
+#     dnf makecache
+
+# # Install all dependencies in one layer
+# RUN dnf install -y --allowerasing \
+#     git gcc cmake make \
+#     postgresql17-server postgresql17-contrib \
+#     zlib zlib-devel zstd libzstd-devel lz4 lz4-devel \
+#     bzip2 bzip2-devel libpq libpq-devel libev-devel \
+#     python3-docutils pandoc texlive doxygen graphviz \
+#     openssl-devel libatomic libyaml-devel \
+#     libarchive libarchive-devel libssh-devel libcurl-devel \
+#     libasan libubsan lcov \
+#     yaml-cpp-devel check-devel \
+#     libpq5 libev libssh \
+#     gawk coreutils findutils python3-pip && \
+#     pip3 install gcovr && \
+#     dnf clean all
+# Add the compiler toolset which includes more developer libraries
+# RUN dnf install -y gcc-toolset-12-libasan-static 
+# Add this to set up the LD_PRELOAD for ASan
+# ENV LD_PRELOAD=/usr/lib64/libasan.so.6
+
+# Or for running specific commands:
+# CMD LD_PRELOAD=/usr/lib64/libasan.so.6 your-command
+# RUN find /usr -name "libasan.so*"
+# Verify PostgreSQL installation
+# ENV PATH="/usr/pgsql-17/bin:${PATH}"
+# RUN which initdb || { echo "initdb not found in PATH!"; exit 1; }
+
+# Find ASan library and set LD_PRELOAD correctly
+# RUN ASAN_LIB=$(find /usr -name "libasan.so*" | head -1) && \
+#     if [ -n "$ASAN_LIB" ]; then \
+#         echo "Found ASan library at: $ASAN_LIB"; \
+#         echo "export LD_PRELOAD=$ASAN_LIB" >> /etc/profile.d/asan.sh; \
+#         chmod +x /etc/profile.d/asan.sh; \
+#     else \
+#         echo "ERROR: ASan library not found!"; \
+#         exit 1; \
+#     fi
+
+# # Set up directories
+# RUN mkdir -p /var/lib/postgresql/data && chown -R postgres:postgres /var/lib/postgresql/data
+
+# # Copy source code
+# COPY --chown=postgres:postgres . /pgmoneta
+
+# USER postgres
+# RUN rm -rf /pgmoneta/build && mkdir -p /pgmoneta/build /pgmoneta/build/log
+
+# WORKDIR /pgmoneta/build
+
+# RUN cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug .. && make -j$(nproc)
+# # Instead of using find, get the correct ASan library path directly from GCC and set up proper ASan options
+# # Instead of using find, get the correct ASan library path directly from GCC and set up proper ASan options
+# # RUN ASAN_LIB=$(gcc -print-file-name=libasan.so) && \
+# #     if [ -n "$ASAN_LIB" ]; then \
+# #         echo "Found ASan library at: $ASAN_LIB"; \
+# #         echo "export LD_PRELOAD=$ASAN_LIB" > /etc/profile.d/asan.sh; \
+# #         echo "export ASAN_OPTIONS=detect_leaks=0,verify_asan_link_order=0" >> /etc/profile.d/asan.sh; \
+# #         chmod +x /etc/profile.d/asan.sh; \
+# #     else \
+# #         echo "ERROR: ASan library not found!"; \
+# #         exit 1; \
+# #     fi
+
+# CMD ["/bin/bash"]
+
+# Set up directories
+# RUN mkdir -p /var/lib/postgresql/data && chown -R postgres:postgres /var/lib/postgresql/data
+
+# # # Get the correct ASan library path and set up environment - DO THIS BEFORE USER CHANGE
+# # RUN ASAN_LIB=$(gcc -print-file-name=libasan.so) && \
+# #     if [ -n "$ASAN_LIB" ]; then \
+# #         echo "Found ASan library at: $ASAN_LIB"; \
+# #         echo "export LD_PRELOAD=$ASAN_LIB" > /etc/profile.d/asan.sh; \
+# #         echo "export ASAN_OPTIONS=detect_leaks=0,verify_asan_link_order=0" >> /etc/profile.d/asan.sh; \
+# #         chmod +x /etc/profile.d/asan.sh; \
+# #     else \
+# #         echo "ERROR: ASan library not found!"; \
+# #         exit 1; \
+# #     fi
+
+# # Copy source code
+# COPY --chown=postgres:postgres . /pgmoneta
+
+# # NOW switch to postgres user
+# USER postgres
+# RUN rm -rf /pgmoneta/build && mkdir -p /pgmoneta/build /pgmoneta/build/log
+
+# WORKDIR /pgmoneta/build
+
+# RUN cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug .. && make -j$(nproc)
+
+# CMD ["/bin/bash"]
+
+FROM centos:stream9
+
+# Set up repositories in correct order
+RUN dnf -y upgrade && \
     dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled crb && \
-    dnf makecache && \
-    dnf install -y \
-        git \
-        gcc \
-        cmake \
-        make \
-        postgresql-devel \
-        zlib \
-        zlib-devel \
-        zstd \
-        libzstd-devel \
-        lz4 \
-        lz4-devel \
-        bzip2 \
-        bzip2-devel \
-        libpq \
-        libpq-devel \
-        libev-devel \
-        python3-docutils \
-        pandoc \
-        texlive \
-        doxygen \
-        graphviz \
-        openssl-devel \
-        libatomic \
-        libyaml-devel \
-        libarchive \
-        libarchive-devel \
-        libssh-devel \
-        libcurl-devel \
-        libasan \
-        lcov \ 
-        yaml-cpp-devel \
-        check-devel && \
+    dnf install -y epel-release && \
+    dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm && \
+    dnf -qy module disable postgresql && \
+    dnf makecache
+
+# Install all dependencies in one layer
+RUN dnf install -y --allowerasing \
+    git gcc cmake make \
+    postgresql17-server postgresql17-contrib \
+    zlib zlib-devel zstd libzstd-devel lz4 lz4-devel \
+    bzip2 bzip2-devel libpq libpq-devel libev-devel \
+    python3-docutils pandoc texlive doxygen graphviz \
+    openssl-devel libatomic libyaml-devel \
+    libarchive libarchive-devel libssh-devel libcurl-devel \
+    libasan libubsan lcov \
+    yaml-cpp-devel check-devel \
+    libpq5 libev libssh \
+    gawk coreutils findutils python3-pip && \
+    pip3 install gcovr && \
     dnf clean all
-    
 
-    
-RUN dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm && \
-    dnf -y update && \
-    dnf install -y postgresql17-server \
-        postgresql17-contrib \
-        libpq5 \
-        libev \
-        libatomic \
-        libssh
-
-RUN dnf -y install python3-pip && \
-    pip3 install gcovr 
-
-
-# After installing PostgreSQL, add:
+# Verify PostgreSQL installation
 ENV PATH="/usr/pgsql-17/bin:${PATH}"
+RUN which initdb || { echo "initdb not found in PATH!"; exit 1; }
+
+# Set up directories
 RUN mkdir -p /var/lib/postgresql/data && chown -R postgres:postgres /var/lib/postgresql/data
 
 # Copy source code
 COPY --chown=postgres:postgres . /pgmoneta
 
+# NOW switch to postgres user
 USER postgres
-RUN rm -rf /pgmoneta/build && mkdir -p /pgmoneta/build  /pgmoneta/build/log
+RUN rm -rf /pgmoneta/build && mkdir -p /pgmoneta/build /pgmoneta/build/log
 
 WORKDIR /pgmoneta/build
 
-RUN cmake .. && make -j$(nproc)
+RUN cmake -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug .. && make -j$(nproc)
+
 CMD ["/bin/bash"]
-
-
-
-    
-
-
-
-
-
-
-
 
 
 

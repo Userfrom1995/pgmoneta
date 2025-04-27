@@ -37,16 +37,16 @@ if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     ${THREAD_INCLUDE_DIRS}
   )
 
- find_program(GCOV_PATH gcov)
- find_program(GCOVR_PATH gcovr)
- # Enable coverage if both gcov and gcovr are found
- if(GCOV_PATH AND GCOVR_PATH)
+  find_program(GCOV_PATH gcov)
+  find_program(GCOVR_PATH gcovr)
+  # Enable coverage only if both gcov and gcovr are found and compiler is GCC
+ if(GCOV_PATH AND GCOVR_PATH AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
   set(ENABLE_COVERAGE ON)
-  message(STATUS "Coverage tools (gcov and gcovr) found: Code coverage ENABLED")
+  message(STATUS "Coverage tools (gcov and gcovr) found and compiler is GCC: Code coverage ENABLED")
  else()
-  message(WARNING "Coverage tools not found: Code coverage SKIPPED")
+  message(STATUS "Coverage tools not found or compiler is not GCC: Code coverage SKIPPED")
  endif()
-
+ 
   #
   # Library directories
   #

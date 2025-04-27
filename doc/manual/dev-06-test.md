@@ -113,7 +113,7 @@ You have two main options to run the tests:
 From the `build` directory, simply run:
 
 ```sh
-ctest
+ctest -V
 ```
 
 This will:

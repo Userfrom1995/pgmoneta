@@ -67,6 +67,31 @@ echo " Running tests and generating coverage in container: $CONTAINER_NAME"
 $CONTAINER_ENGINE run --name "$CONTAINER_NAME" "$IMAGE_NAME" bash -c "
   set -e
   cd /pgmoneta/build
+
+  # Configure Address Sanitizer with error handling
+  export ASAN_OPTIONS=detect_leaks=0,verify_asan_link_order=0,abort_on_error=0
+  
+  # Try to get the ASan library path safely and resolve symlinks
+  ASAN_LIB=\$(gcc -print-file-name=libasan.so)
+  
+  # Only set LD_PRELOAD if ASAN_LIB is not empty and resolve symlinks
+  if [ -n \"\$ASAN_LIB\" ] && [ -f \"\$ASAN_LIB\" ]; then
+    # Resolve symlinks to get the actual library file
+    REAL_ASAN_LIB=\$(readlink -f \"\$ASAN_LIB\")
+    echo ' Found ASan library at: '\$ASAN_LIB
+    echo ' Resolved to: '\$REAL_ASAN_LIB
+    
+    # Only preload if it's a real file, not a symlink
+    if [ -f \"\$REAL_ASAN_LIB\" ] && [ ! -L \"\$REAL_ASAN_LIB\" ]; then
+      echo ' Preloading resolved ASan library'
+      export LD_PRELOAD=\$REAL_ASAN_LIB
+    else
+      echo ' Skipping ASan preload - could not resolve to actual library'
+    fi
+  else
+    echo ' WARNING: ASan library not found, continuing without it'
+  fi
+
   ./testsuite.sh
   echo ' Running gcovr to generate coverage reports...'
   mkdir -p /pgmoneta/build/coverage

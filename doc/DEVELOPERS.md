@@ -91,14 +91,15 @@ Download dependencies
 
 #### Generating Code Coverage
 
-Code coverage is automatically enabled if both `gcov` and `gcovr` are installed on your system.  
+Code coverage is automatically enabled **only for GCC builds** if both `gcov` and `gcovr` are installed on your system.  
 To install the required tools, run:
 
 ```sh
 dnf install gcovr gcc
 ```
-When these tools are present, the build system will detect them and enable code coverage generation automatically during the build process.  
 
+When these tools are present and the compiler is set to GCC, the build system will detect them and enable code coverage generation automatically during the build process.  
+If you use Clang as the compiler, code coverage will not be enabled by default.
 
 ### Build
 

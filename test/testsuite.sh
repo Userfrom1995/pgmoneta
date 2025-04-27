@@ -543,24 +543,6 @@ execute_testcases() {
    echo ""
 }
 
-generate_coverage_report() {
-   if command -v gcov >/dev/null 2>&1 && command -v gcovr >/dev/null 2>&1; then
-      echo "Generating coverage report with gcovr..."
-      COVERAGE_DIR="./coverage"
-      BUILD_DIR="."
-      SRC_DIR="../src"
-      mkdir -p "$COVERAGE_DIR"
-      if [ -d "$BUILD_DIR" ]; then
-         gcovr -r "$SRC_DIR" --object-directory "$BUILD_DIR" --html --html-details -o "$COVERAGE_DIR/index.html"
-         gcovr -r "$SRC_DIR" --object-directory "$BUILD_DIR" > "$COVERAGE_DIR/summary.txt"
-         echo "Coverage report generated at $COVERAGE_DIR"
-      else
-         echo "Build directory $BUILD_DIR does not exist, skipping coverage report."
-      fi
-   else
-      echo "gcov or gcovr not found, skipping coverage report."
-   fi
-}
 
 
 execute_pgmoneta_ext_suite() {
@@ -622,11 +604,8 @@ run_tests() {
       pgmoneta_initialize_configuration
       # execute_pgmoneta_ext_suite Uncomment when pgmoneta_ext is enabled
       execute_testcases
-      
-
       # clean cluster
       clean
-      generate_coverage_report
    else
       echo "user should be $FILE_OWNER"
       exit 1

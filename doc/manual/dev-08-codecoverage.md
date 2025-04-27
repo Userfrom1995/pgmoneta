@@ -27,6 +27,8 @@ These commands must be run from inside the `build` directory.
 If you want to generate these reports manually after running your own tests, simply run the above commands from your `build` directory.
 
 > **Note:** If the `coverage` directory does not exist, create it first using `mkdir -p ./coverage` before running the coverage commands.
+>
+> **Important:** `gcovr` only works with GCC builds. If you build the project with Clang, coverage reports will not be generated with `gcovr`.
 
 ## Notes
 

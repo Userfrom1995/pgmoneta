@@ -72,6 +72,10 @@ $CONTAINER_ENGINE run --name "$CONTAINER_NAME" "$IMAGE_NAME" bash -c "
   mkdir -p /pgmoneta/build/coverage
   echo ' Listing .gcda/.gcno files:'
   find . -name '*.gcda' -o -name '*.gcno'
+  gcovr -r /pgmoneta/src --object-directory . --html --html-details -o coverage/index.html
+  gcovr -r /pgmoneta/src --object-directory . > coverage/summary.txt
+  gcovr -r /pgmoneta/src --object-directory . --xml -o coverage/coverage.xml
+  echo ' Coverage reports generated in /pgmoneta/build/coverage'
 "
 
 if [ $? -ne 0 ]; then

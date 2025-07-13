@@ -39,6 +39,7 @@
 #include <utils.h>
 #include <value.h>
 #include <tsclient.h>
+#include <stdio.h>
 
 /* system */
 #include <err.h>
@@ -115,29 +116,38 @@ pgmoneta_tsclient_destroy()
 int
 pgmoneta_tsclient_execute_backup(char* server, char* incremental)
 {
+   printf("[DEBUG] pgmoneta_tsclient_execute_backup: entry, server=%s, incremental=%s\n", server, incremental ? incremental : "NULL");
    int socket = -1;
 
    socket = get_connection();
+   printf("[DEBUG] pgmoneta_tsclient_execute_backup: got connection, socket=%d\n", socket);
+
    // Security Checks
    if (!pgmoneta_socket_isvalid(socket) || server == NULL)
    {
+      printf("[DEBUG] pgmoneta_tsclient_execute_backup: invalid socket or server\n");
       goto error;
    }
+
    // Create a backup request to the main server
    if (pgmoneta_management_request_backup(NULL, socket, server, MANAGEMENT_COMPRESSION_NONE, MANAGEMENT_ENCRYPTION_NONE, incremental, MANAGEMENT_OUTPUT_FORMAT_JSON))
    {
+      printf("[DEBUG] pgmoneta_tsclient_execute_backup: management_request_backup failed\n");
       goto error;
    }
 
    // Check the outcome field of the output, if true success, else failure
    if (check_output_outcome(socket))
    {
+      printf("[DEBUG] pgmoneta_tsclient_execute_backup: check_output_outcome failed\n");
       goto error;
    }
 
+   printf("[DEBUG] pgmoneta_tsclient_execute_backup: success, disconnecting socket\n");
    pgmoneta_disconnect(socket);
    return 0;
 error:
+   printf("[DEBUG] pgmoneta_tsclient_execute_backup: error, disconnecting socket\n");
    pgmoneta_disconnect(socket);
    return 1;
 }

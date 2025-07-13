@@ -6,3 +6,4 @@ vendor/
 .cache
 *.uncrustify
 .DS_Store
+backup/

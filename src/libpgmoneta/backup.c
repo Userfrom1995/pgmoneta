@@ -251,6 +251,7 @@ pgmoneta_backup(int client_fd, int server, uint8_t compression, uint8_t encrypti
       ec = MANAGEMENT_ERROR_BACKUP_ERROR;
       goto error;
    }
+   free(temp_backup);
    temp_backup = NULL;
    if (pgmoneta_management_create_response(payload, server, &response))
    {
@@ -356,7 +357,7 @@ error:
    pgmoneta_workflow_destroy(workflow);
 
    pgmoneta_art_destroy(nodes);
-
+   free(temp_backup);
    free(date);
    free(backup);
    free(child);

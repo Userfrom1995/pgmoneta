@@ -33,6 +33,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <stdio.h>
 
 #include "pgmoneta_test_3.h"
 
@@ -50,10 +51,144 @@ static void* echo_server_thread(void* arg);
 static int start_echo_server(int port);
 static int stop_echo_server(void);
 
+// static void*
+// echo_server_thread(void* arg)
+// {
+//    struct echo_server* server = (struct echo_server*)arg;
+
+//    while (server->running)
+//    {
+//       struct sockaddr_in client_addr;
+//       socklen_t client_len = sizeof(client_addr);
+
+//       int client_fd = accept(server->socket_fd, (struct sockaddr*)&client_addr, &client_len);
+//       if (client_fd < 0)
+//       {
+//          if (server->running)
+//          {
+//             continue;
+//          }
+//          break;
+//       }
+
+//       char buffer[4096];
+//       ssize_t bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+
+//       if (bytes_read > 0)
+//       {
+//          buffer[bytes_read] = '\0';
+
+//          char response[] = "HTTP/1.1 200 OK\r\n"
+//                            "Content-Type: application/json\r\n"
+//                            "Connection: close\r\n"
+//                            "\r\n"
+//                            "{\"status\":\"ok\"}\n";
+
+//          send(client_fd, response, strlen(response), 0);
+//       }
+
+//       close(client_fd);
+//    }
+
+//    return NULL;
+// }
+
+// static int
+// start_echo_server(int port)
+// {
+//    if (test_server != NULL)
+//    {
+//       return 0;
+//    }
+
+//    test_server = malloc(sizeof(struct echo_server));
+//    if (test_server == NULL)
+//    {
+//       return 1;
+//    }
+
+//    test_server->port = port;
+//    test_server->running = false;
+
+//    test_server->socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+//    if (test_server->socket_fd < 0)
+//    {
+//       free(test_server);
+//       test_server = NULL;
+//       return 1;
+//    }
+
+//    int opt = 1;
+//    setsockopt(test_server->socket_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+//    struct sockaddr_in addr;
+//    memset(&addr, 0, sizeof(addr));
+//    addr.sin_family = AF_INET;
+//    addr.sin_addr.s_addr = INADDR_ANY;
+//    addr.sin_port = htons(port);
+
+//    if (bind(test_server->socket_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+//    {
+//       close(test_server->socket_fd);
+//       free(test_server);
+//       test_server = NULL;
+//       return 1;
+//    }
+
+//    if (listen(test_server->socket_fd, 5) < 0)
+//    {
+//       close(test_server->socket_fd);
+//       free(test_server);
+//       test_server = NULL;
+//       return 1;
+//    }
+
+//    test_server->running = true;
+
+//    if (pthread_create(&test_server->thread, NULL, echo_server_thread, test_server) != 0)
+//    {
+//       test_server->running = false;
+//       close(test_server->socket_fd);
+//       free(test_server);
+//       test_server = NULL;
+//       return 1;
+//    }
+
+//    usleep(100000);
+
+//    return 0;
+// }
+
+// static int
+// stop_echo_server(void)
+// {
+//    if (test_server == NULL)
+//    {
+//       return 0;
+//    }
+
+//    test_server->running = false;
+
+//    if (test_server->socket_fd >= 0)
+//    {
+//       close(test_server->socket_fd);
+//       test_server->socket_fd = -1;
+//    }
+
+//    pthread_detach(test_server->thread);
+
+//    free(test_server);
+//    test_server = NULL;
+
+//    return 0;
+// }
+
+
 static void*
 echo_server_thread(void* arg)
 {
    struct echo_server* server = (struct echo_server*)arg;
+   printf("[echo_server] Thread started, listening on port %d\n", server->port);
 
    while (server->running)
    {
@@ -69,6 +204,10 @@ echo_server_thread(void* arg)
          }
          break;
       }
+
+      char client_ip[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &(client_addr.sin_addr), client_ip, INET_ADDRSTRLEN);
+      printf("[echo_server] Accepted connection from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
 
       char buffer[4096];
       ssize_t bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
@@ -89,6 +228,7 @@ echo_server_thread(void* arg)
       close(client_fd);
    }
 
+   printf("[echo_server] Thread exiting\n");
    return NULL;
 }
 
@@ -112,10 +252,12 @@ start_echo_server(int port)
    test_server->socket_fd = socket(AF_INET, SOCK_STREAM, 0);
    if (test_server->socket_fd < 0)
    {
+      printf("[echo_server] Failed to create socket (IPv4)\n");
       free(test_server);
       test_server = NULL;
       return 1;
    }
+   printf("[echo_server] Created socket (IPv4), fd=%d\n", test_server->socket_fd);
 
    int opt = 1;
    setsockopt(test_server->socket_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -126,8 +268,10 @@ start_echo_server(int port)
    addr.sin_addr.s_addr = INADDR_ANY;
    addr.sin_port = htons(port);
 
+   printf("[echo_server] Binding to 0.0.0.0:%d (IPv4)\n", port);
    if (bind(test_server->socket_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
    {
+      printf("[echo_server] Failed to bind to 0.0.0.0:%d (IPv4)\n", port);
       close(test_server->socket_fd);
       free(test_server);
       test_server = NULL;
@@ -136,6 +280,7 @@ start_echo_server(int port)
 
    if (listen(test_server->socket_fd, 5) < 0)
    {
+      printf("[echo_server] Failed to listen on port %d\n", port);
       close(test_server->socket_fd);
       free(test_server);
       test_server = NULL;
@@ -146,12 +291,15 @@ start_echo_server(int port)
 
    if (pthread_create(&test_server->thread, NULL, echo_server_thread, test_server) != 0)
    {
+      printf("[echo_server] Failed to create thread\n");
       test_server->running = false;
       close(test_server->socket_fd);
       free(test_server);
       test_server = NULL;
       return 1;
    }
+
+   printf("[echo_server] Started echo server on port %d (IPv4)\n", port);
 
    usleep(100000);
 
@@ -166,6 +314,7 @@ stop_echo_server(void)
       return 0;
    }
 
+   printf("[echo_server] Stopping echo server\n");
    test_server->running = false;
 
    if (test_server->socket_fd >= 0)
@@ -179,13 +328,14 @@ stop_echo_server(void)
    free(test_server);
    test_server = NULL;
 
+   printf("[echo_server] Echo server stopped\n");
    return 0;
 }
 
 static void
 setup_echo_server(void)
 {
-   start_echo_server(9999);
+   start_echo_server(80);
 }
 
 static void

@@ -31,6 +31,11 @@
 #include <http.h>
 #include <logging.h>
 #include <tsclient.h>
+#include <stdio.h> 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
 
 int
 pgmoneta_tsclient_execute_http()
@@ -41,12 +46,28 @@ pgmoneta_tsclient_execute_http()
    pgmoneta_init_logging();
 
    const char* hostname = "localhost";
-   int port = 9999;
+   int port = 80;
    bool secure = false;
+
+   printf("[tsclient] Connecting to %s:%d (IPv4, HTTP)\n", hostname, port);
 
    if (pgmoneta_http_connect((char*)hostname, port, secure, &h))
    {
+      printf("[tsclient] Failed to connect to %s:%d (IPv4, HTTP)\n", hostname, port);
       return 1;
+   }
+
+   // Log local (ephemeral) port
+   struct sockaddr_in local_addr;
+   socklen_t addr_len = sizeof(local_addr);
+   if (getsockname(h->socket, (struct sockaddr*)&local_addr, &addr_len) == 0)
+   {
+      printf("[tsclient] Local request sent from %s:%d\n",
+             inet_ntoa(local_addr.sin_addr), ntohs(local_addr.sin_port));
+   }
+   else
+   {
+      perror("[tsclient] getsockname failed");
    }
 
    status = pgmoneta_http_get(h, (char*)hostname, "/get");
@@ -66,12 +87,28 @@ pgmoneta_tsclient_execute_https()
    pgmoneta_init_logging();
 
    const char* hostname = "localhost";
-   int port = 9999;
+   int port = 80;
    bool secure = false;
+
+   printf("[tsclient] Connecting to %s:%d (IPv4, HTTPS)\n", hostname, port);
 
    if (pgmoneta_http_connect((char*)hostname, port, secure, &h))
    {
+      printf("[tsclient] Failed to connect to %s:%d (IPv4, HTTPS)\n", hostname, port);
       return 1;
+   }
+
+   // Log local (ephemeral) port
+   struct sockaddr_in local_addr;
+   socklen_t addr_len = sizeof(local_addr);
+   if (getsockname(h->socket, (struct sockaddr*)&local_addr, &addr_len) == 0)
+   {
+      printf("[tsclient] Local request sent from %s:%d\n",
+             inet_ntoa(local_addr.sin_addr), ntohs(local_addr.sin_port));
+   }
+   else
+   {
+      perror("[tsclient] getsockname failed");
    }
 
    status = pgmoneta_http_get(h, (char*)hostname, "/get");
@@ -91,13 +128,29 @@ pgmoneta_tsclient_execute_http_post()
    pgmoneta_init_logging();
 
    const char* hostname = "localhost";
-   int port = 9999;
+   int port = 80;
    bool secure = false;
    const char* test_data = "name=pgmoneta&version=1.0";
 
+   printf("[tsclient] Connecting to %s:%d (IPv4, HTTP POST)\n", hostname, port);
+
    if (pgmoneta_http_connect((char*)hostname, port, secure, &h))
    {
+      printf("[tsclient] Failed to connect to %s:%d (IPv4, HTTP POST)\n", hostname, port);
       return 1;
+   }
+
+   // Log local (ephemeral) port
+   struct sockaddr_in local_addr;
+   socklen_t addr_len = sizeof(local_addr);
+   if (getsockname(h->socket, (struct sockaddr*)&local_addr, &addr_len) == 0)
+   {
+      printf("[tsclient] Local request sent from %s:%d\n",
+             inet_ntoa(local_addr.sin_addr), ntohs(local_addr.sin_port));
+   }
+   else
+   {
+      perror("[tsclient] getsockname failed");
    }
 
    status = pgmoneta_http_post(h, (char*)hostname, "/post", (char*)test_data, strlen(test_data));
@@ -117,13 +170,29 @@ pgmoneta_tsclient_execute_http_put()
    pgmoneta_init_logging();
 
    const char* hostname = "localhost";
-   int port = 9999;
+   int port = 80;
    bool secure = false;
    const char* test_data = "This is a test file content for PUT request";
 
+   printf("[tsclient] Connecting to %s:%d (IPv4, HTTP PUT)\n", hostname, port);
+
    if (pgmoneta_http_connect((char*)hostname, port, secure, &h))
    {
+      printf("[tsclient] Failed to connect to %s:%d (IPv4, HTTP PUT)\n", hostname, port);
       return 1;
+   }
+
+   // Log local (ephemeral) port
+   struct sockaddr_in local_addr;
+   socklen_t addr_len = sizeof(local_addr);
+   if (getsockname(h->socket, (struct sockaddr*)&local_addr, &addr_len) == 0)
+   {
+      printf("[tsclient] Local request sent from %s:%d\n",
+             inet_ntoa(local_addr.sin_addr), ntohs(local_addr.sin_port));
+   }
+   else
+   {
+      perror("[tsclient] getsockname failed");
    }
 
    status = pgmoneta_http_put(h, (char*)hostname, "/put", (void*)test_data, strlen(test_data));
@@ -144,7 +213,7 @@ pgmoneta_tsclient_execute_http_put_file()
    pgmoneta_init_logging();
 
    const char* hostname = "localhost";
-   int port = 9999;
+   int port = 80;
    bool secure = false;
    const char* test_data = "This is a test file content for PUT file request\nSecond line of test data\nThird line with some numbers: 12345";
    size_t data_len = strlen(test_data);
@@ -152,21 +221,39 @@ pgmoneta_tsclient_execute_http_put_file()
    temp_file = tmpfile();
    if (temp_file == NULL)
    {
+      printf("[tsclient] Failed to create temp file for PUT file\n");
       return 1;
    }
 
    if (fwrite(test_data, 1, data_len, temp_file) != data_len)
    {
+      printf("[tsclient] Failed to write to temp file for PUT file\n");
       fclose(temp_file);
       return 1;
    }
 
    rewind(temp_file);
 
+   printf("[tsclient] Connecting to %s:%d (IPv4, HTTP PUT FILE)\n", hostname, port);
+
    if (pgmoneta_http_connect((char*)hostname, port, secure, &h))
    {
+      printf("[tsclient] Failed to connect to %s:%d (IPv4, HTTP PUT FILE)\n", hostname, port);
       fclose(temp_file);
       return 1;
+   }
+
+   // Log local (ephemeral) port
+   struct sockaddr_in local_addr;
+   socklen_t addr_len = sizeof(local_addr);
+   if (getsockname(h->socket, (struct sockaddr*)&local_addr, &addr_len) == 0)
+   {
+      printf("[tsclient] Local request sent from %s:%d\n",
+             inet_ntoa(local_addr.sin_addr), ntohs(local_addr.sin_port));
+   }
+   else
+   {
+      perror("[tsclient] getsockname failed");
    }
 
    status = pgmoneta_http_put_file(h, (char*)hostname, "/put", temp_file, data_len, "text/plain");

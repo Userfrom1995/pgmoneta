@@ -27,32 +27,49 @@
  *
  */
 
+#include <stdio.h>
 #include <tsclient.h>
-
 #include "pgmoneta_test_2.h"
 
 // test backup
 START_TEST(test_pgmoneta_backup)
 {
+   static int call_count = 0;
+   call_count++;
+   printf("[DEBUG] test_pgmoneta_backup: call #%d - starting\n", call_count);
+
    int found = 0;
    found = !pgmoneta_tsclient_execute_backup("primary", NULL);
+
+   printf("[DEBUG] test_pgmoneta_backup: call #%d - after execute_backup, found=%d\n", call_count, found);
+
    ck_assert_msg(found, "success status not found");
+
+   printf("[DEBUG] test_pgmoneta_backup: call #%d - finished\n", call_count);
 }
 END_TEST
+
 // test restore
 START_TEST(test_pgmoneta_restore)
 {
+   printf("[DEBUG] test_pgmoneta_restore: starting\n");
    int found = 0;
    found = !pgmoneta_tsclient_execute_restore("primary", "newest", "current");
+   printf("[DEBUG] test_pgmoneta_restore: after execute_restore, found=%d\n", found);
    ck_assert_msg(found, "success status not found");
+   printf("[DEBUG] test_pgmoneta_restore: finished\n");
 }
 END_TEST
+
 // test delete
 START_TEST(test_pgmoneta_delete)
 {
+   printf("[DEBUG] test_pgmoneta_delete: starting\n");
    int found = 0;
    found = !pgmoneta_tsclient_execute_delete("primary", "oldest");
+   printf("[DEBUG] test_pgmoneta_delete: after execute_delete, found=%d\n", found);
    ck_assert_msg(found, "success status not found");
+   printf("[DEBUG] test_pgmoneta_delete: finished\n");
 }
 END_TEST
 
@@ -70,6 +87,7 @@ pgmoneta_test2_suite()
    tcase_add_test(tc_core, test_pgmoneta_backup);
    tcase_add_test(tc_core, test_pgmoneta_delete);
    tcase_add_test(tc_core, test_pgmoneta_restore);
+
    suite_add_tcase(s, tc_core);
 
    return s;

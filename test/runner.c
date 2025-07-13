@@ -35,7 +35,9 @@
 
 int
 main(int argc, char* argv[])
-{
+{  
+
+   setvbuf(stdout, NULL, _IONBF, 0); // <-- Add this line
 
    if (argc != 2)
    {

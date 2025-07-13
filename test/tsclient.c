@@ -122,26 +122,27 @@ pgmoneta_tsclient_execute_backup(char* server, char* incremental)
    socket = get_connection();
    printf("[DEBUG] pgmoneta_tsclient_execute_backup: got connection, socket=%d\n", socket);
 
-   // Security Checks
    if (!pgmoneta_socket_isvalid(socket) || server == NULL)
    {
       printf("[DEBUG] pgmoneta_tsclient_execute_backup: invalid socket or server\n");
       goto error;
    }
 
-   // Create a backup request to the main server
+   printf("[DEBUG] pgmoneta_tsclient_execute_backup: before management_request_backup\n");
    if (pgmoneta_management_request_backup(NULL, socket, server, MANAGEMENT_COMPRESSION_NONE, MANAGEMENT_ENCRYPTION_NONE, incremental, MANAGEMENT_OUTPUT_FORMAT_JSON))
    {
       printf("[DEBUG] pgmoneta_tsclient_execute_backup: management_request_backup failed\n");
       goto error;
    }
+   printf("[DEBUG] pgmoneta_tsclient_execute_backup: after management_request_backup\n");
 
-   // Check the outcome field of the output, if true success, else failure
+   printf("[DEBUG] pgmoneta_tsclient_execute_backup: before check_output_outcome\n");
    if (check_output_outcome(socket))
    {
       printf("[DEBUG] pgmoneta_tsclient_execute_backup: check_output_outcome failed\n");
       goto error;
    }
+   printf("[DEBUG] pgmoneta_tsclient_execute_backup: after check_output_outcome\n");
 
    printf("[DEBUG] pgmoneta_tsclient_execute_backup: success, disconnecting socket\n");
    pgmoneta_disconnect(socket);

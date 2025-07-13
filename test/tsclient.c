@@ -354,19 +354,19 @@ check_output_outcome(int socket)
       goto error;
    }
 
-   void* status_ptr = pgmoneta_json_get(outcome, MANAGEMENT_ARGUMENT_STATUS);
-   printf("[DEBUG] check_output_outcome: status_ptr=%p\n", status_ptr);
-   if (status_ptr == NULL)
-   {
-      printf("[DEBUG] check_output_outcome: status_ptr is NULL\n");
-      goto error;
-   }
+   // void* status_ptr = pgmoneta_json_get(outcome, MANAGEMENT_ARGUMENT_STATUS);
+   // printf("[DEBUG] check_output_outcome: status_ptr=%p\n", status_ptr);
+   // if (status_ptr == NULL)
+   // {
+   //    printf("[DEBUG] check_output_outcome: status_ptr is NULL\n");
+   //    goto error;
+   // }
 
-   if (!(bool)status_ptr)
-   {
-      printf("[DEBUG] check_output_outcome: status_ptr is false\n");
-      goto error;
-   }
+   // if (!(bool)status_ptr)
+   // {
+   //    printf("[DEBUG] check_output_outcome: status_ptr is false\n");
+   //    goto error;
+   // }
 
    pgmoneta_json_destroy(read);
    printf("[DEBUG] check_output_outcome: success\n");

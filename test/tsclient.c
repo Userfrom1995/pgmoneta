@@ -340,19 +340,22 @@ check_output_outcome(int socket)
       printf("[DEBUG] check_output_outcome: MANAGEMENT_CATEGORY_OUTCOME not found\n");
       goto error;
    }
-
+   printf("[DEBUG] After contain key\n");
    outcome = (struct json*)pgmoneta_json_get(read, MANAGEMENT_CATEGORY_OUTCOME);
+   printf("[DEBUG] befor_outcome entry: entry\n");
    if (outcome == NULL)
    {
       printf("[DEBUG] check_output_outcome: outcome is NULL\n");
       goto error;
    }
+   printf("[DEBUG] After outcome: entry\n");
 
    if (!pgmoneta_json_contains_key(outcome, MANAGEMENT_ARGUMENT_STATUS))
    {
       printf("[DEBUG] check_output_outcome: MANAGEMENT_ARGUMENT_STATUS not found\n");
       goto error;
    }
+   printf("[DEBUG] After contain key\n");
 
    // void* status_ptr = pgmoneta_json_get(outcome, MANAGEMENT_ARGUMENT_STATUS);
    // printf("[DEBUG] check_output_outcome: status_ptr=%p\n", status_ptr);

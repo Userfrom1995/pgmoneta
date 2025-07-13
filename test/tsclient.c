@@ -327,25 +327,52 @@ check_output_outcome(int socket)
    struct json* read = NULL;
    struct json* outcome = NULL;
 
+   printf("[DEBUG] check_output_outcome: entry\n");
+
    if (pgmoneta_management_read_json(NULL, socket, NULL, NULL, &read))
    {
+      printf("[DEBUG] check_output_outcome: pgmoneta_management_read_json failed\n");
       goto error;
    }
 
    if (!pgmoneta_json_contains_key(read, MANAGEMENT_CATEGORY_OUTCOME))
    {
+      printf("[DEBUG] check_output_outcome: MANAGEMENT_CATEGORY_OUTCOME not found\n");
       goto error;
    }
 
    outcome = (struct json*)pgmoneta_json_get(read, MANAGEMENT_CATEGORY_OUTCOME);
-   if (!pgmoneta_json_contains_key(outcome, MANAGEMENT_ARGUMENT_STATUS) && !(bool)pgmoneta_json_get(outcome, MANAGEMENT_ARGUMENT_STATUS))
+   if (outcome == NULL)
    {
+      printf("[DEBUG] check_output_outcome: outcome is NULL\n");
+      goto error;
+   }
+
+   if (!pgmoneta_json_contains_key(outcome, MANAGEMENT_ARGUMENT_STATUS))
+   {
+      printf("[DEBUG] check_output_outcome: MANAGEMENT_ARGUMENT_STATUS not found\n");
+      goto error;
+   }
+
+   void* status_ptr = pgmoneta_json_get(outcome, MANAGEMENT_ARGUMENT_STATUS);
+   printf("[DEBUG] check_output_outcome: status_ptr=%p\n", status_ptr);
+   if (status_ptr == NULL)
+   {
+      printf("[DEBUG] check_output_outcome: status_ptr is NULL\n");
+      goto error;
+   }
+
+   if (!(bool)status_ptr)
+   {
+      printf("[DEBUG] check_output_outcome: status_ptr is false\n");
       goto error;
    }
 
    pgmoneta_json_destroy(read);
+   printf("[DEBUG] check_output_outcome: success\n");
    return 0;
 error:
+   printf("[DEBUG] check_output_outcome: error\n");
    pgmoneta_json_destroy(read);
    return 1;
 }

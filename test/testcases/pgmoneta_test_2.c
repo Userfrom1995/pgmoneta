@@ -30,11 +30,13 @@
 #include <stdio.h>
 #include <tsclient.h>
 #include "pgmoneta_test_2.h"
+#include <unistd.h> 
+static int call_count = 0;
 
 // test backup
 START_TEST(test_pgmoneta_backup)
 {
-   static int call_count = 0;
+   
    call_count++;
    printf("[DEBUG] test_pgmoneta_backup: call #%d - starting\n", call_count);
 
@@ -46,6 +48,8 @@ START_TEST(test_pgmoneta_backup)
    ck_assert_msg(found, "success status not found");
 
    printf("[DEBUG] test_pgmoneta_backup: call #%d - finished\n", call_count);
+   
+   sleep(2);
 }
 END_TEST
 

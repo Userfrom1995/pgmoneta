@@ -5,10 +5,14 @@ on:
     branches:
       - main
       - 0.19.x
+      - fix_test
+      - revert_utf8
   pull_request:
     branches:
       - main
       - 0.19.x
+      - fix_test
+      - revert_utf8
   workflow_dispatch:
 
 jobs:
@@ -17,8 +21,9 @@ jobs:
 
     strategy:
       matrix:
-        compiler: [gcc, clang]
-        build_type: [Debug, Release]
+        compiler: [clang]
+        build_type: [Debug]
+        run_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
       fail-fast: false
 
     steps:
@@ -73,7 +78,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-reports-${{ matrix.compiler }}-${{ matrix.build_type }}
+          name: coverage-reports-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.run_id }}-${{ github.run_id }}
           path: /tmp/pgmoneta-test/coverage
           retention-days: 90
 
@@ -81,7 +86,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: logs-${{ matrix.compiler }}-${{ matrix.build_type }}
+          name: logs-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.run_id }}-${{ github.run_id }}
           path: /tmp/pgmoneta-test/log
           retention-days: 90
 
@@ -130,7 +135,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: macos-build-logs
+          name: macos-build-logs-${{ github.run_id }}
           path: |
             ${{ env.BUILD_DIR }}/log/
             /tmp/*.log
@@ -139,7 +144,7 @@ jobs:
       - name: Upload Generated Documentation Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-generated-docs
+          name: macos-generated-docs-${{ github.run_id }}
           path: ${{ env.BUILD_DIR }}/doc/
           retention-days: 7
 

@@ -37,7 +37,6 @@ extern "C" {
 #include <progress.h>
 
 /* system */
-#include <ev.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -63,6 +62,8 @@ extern "C" {
 
 #define ALIGNMENT_SIZE               512
 #define DEFAULT_BUFFER_SIZE          131072
+#define RECV_BUFFER_HEADROOM         8
+#define MESSAGE_PARSE_BUFFER_SIZE    (DEFAULT_BUFFER_SIZE - RECV_BUFFER_HEADROOM)
 
 #define DEFAULT_BURST                65536
 #define DEFAULT_EVERY                1
@@ -511,7 +512,7 @@ struct main_configuration
 
    unsigned int update_process_title; /**< Behaviour for updating the process title */
 
-   char libev[MISC_LENGTH]; /**< Name of libev mode */
+   int ev_backend;          /**< Selected event backend (io_uring/epoll/kqueue) */
    int backlog;             /**< The backlog for listen */
    unsigned char hugepage;  /**< Huge page support */
    unsigned char direct_io; /**< Direct I/O support (off, auto, on) */

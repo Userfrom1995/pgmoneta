@@ -160,7 +160,6 @@ Note, that if `host` starts with a `/` it represents a path and `pgmoneta` will 
 | tls_cert_file | | String | No | Certificate file for TLS. This file must be owned by either the user running pgmoneta or root. |
 | tls_key_file | | String | No | Private key file for TLS. This file must be owned by either the user running pgmoneta or root. Additionally permissions must be at least `0640` when owned by root or `0600` otherwise. |
 | tls_ca_file | | String | No | Certificate Authority (CA) file for TLS. This file must be owned by either the user running pgmoneta or root.  |
-| libev | `auto` | String | No | Select the [libev](http://software.schmorp.de/pkg/libev.html) backend to use. Valid options: `auto`, `select`, `poll`, `epoll`, `iouring`, `devpoll` and `port` |
 
 **Miscellaneous**
 
@@ -175,6 +174,7 @@ Note, that if `host` starts with a `/` it represents a path and `pgmoneta` will 
 | backlog | 16 | Int | No | The backlog for `listen()`. Minimum `16` |
 | hugepage | `try` | String | No | Huge page support (`off`, `try`, `on`) |
 | direct_io | `off` | String | No | Direct I/O support for local storage (`off`, `auto`, `on`). When `on`, bypasses kernel page cache using O_DIRECT for better I/O predictability. When `auto`, attempts O_DIRECT and falls back to buffered I/O if unsupported. Linux only; other platforms always use buffered I/O. |
+| ev_backend | `auto` | String | No | The event loop backend to use. Valid options: `auto`, `io_uring`, `epoll`, `kqueue` |
 | pidfile | | String | No | Path to the PID file. If not specified, it will be automatically set to `unix_socket_dir/pgmoneta.<host>.pid` where `<host>` is the value of the `host` parameter or `all` if `host = *`.|
 | update_process_title | `verbose` | String | No | The behavior for updating the operating system process title. Allowed settings are: `never` (or `off`), does not update the process title; `strict` to set the process title without overriding the existing initial process title length; `minimal` to set the process title to the base description; `verbose` (or `full`) to set the process title to the full description. Please note that `strict` and `minimal` are honored only on those systems that do not provide a native way to set the process title (e.g., Linux). On other systems, there is no difference between `strict` and `minimal` and the assumed behaviour is `minimal` even if `strict` is used. `never` and `verbose` are always honored, on every system. On Linux systems the process title is always trimmed to 255 characters, while on system that provide a natve way to set the process title it can be longer. |
 

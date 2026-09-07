@@ -58,6 +58,18 @@ if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
   if (HAVE_EXECINFO_H)
     add_compile_options(-DHAVE_EXECINFO_H)
   endif()
+
+  # Add io_uring compile flag if available
+  if (HAVE_IO_URING AND HAVE_IO_URING_CONSTANTS)
+    add_compile_options(-DHAVE_IO_URING)
+    include_directories(${LIBURING_INCLUDE_DIRS})
+  endif ()
+
+  # Add epoll_pwait2 compile flag if available
+  if (HAVE_EPOLL_PWAIT2)
+    add_compile_options(-DHAVE_EPOLL_PWAIT2)
+  endif ()
+
   #
   # Include directories
   #
@@ -67,7 +79,6 @@ if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     ${BZIP2_INCLUDE_DIRS}
     ${ZSTD_INCLUDE_DIRS}
     ${LZ4_INCLUDE_DIRS}
-    ${LIBEV_INCLUDE_DIRS}
     ${OPENSSL_INCLUDE_DIR}
     ${LIBYAML_INCLUDE_DIRS}
     ${LIBSSH_INCLUDE_DIRS}
@@ -80,7 +91,6 @@ if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     BZIP2_LIBRARIES
     ZSTD_LIBRARIES
     LZ4_LIBRARIES
-    LIBEV_LIBRARIES
     OPENSSL_CRYPTO_LIBRARY
     OPENSSL_SSL_LIBRARY
     LIBYAML_LIBRARIES
@@ -98,7 +108,6 @@ if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     ${BZIP2_LIBRARIES}
     ${ZSTD_LIBRARIES}
     ${LZ4_LIBRARIES}
-    ${LIBEV_LIBRARIES}
     ${OPENSSL_CRYPTO_LIBRARY}
     ${OPENSSL_SSL_LIBRARY}
     ${LIBYAML_LIBRARIES}
@@ -107,6 +116,11 @@ if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     ${LibArchive_LIBRARY}
     ${THREAD_LIBRARY}
   )
+
+  # Link liburing only if available and constants are present
+  if (HAVE_IO_URING AND HAVE_IO_URING_CONSTANTS)
+    link_libraries(${LIBURING_LIBRARIES})
+  endif ()
 
   set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-undefined")
 
@@ -125,6 +139,11 @@ elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Darwin")
   add_compile_options(-D_DARWIN_C_SOURCE)
   add_compile_options(-DHAVE_OSX)
 
+  # Add kqueue compile flag if available
+  if (HAVE_KQUEUE)
+    add_compile_options(-DHAVE_KQUEUE)
+  endif ()
+
   #
   # Include directories
   #
@@ -134,7 +153,6 @@ elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Darwin")
     ${BZIP2_INCLUDE_DIRS}
     ${ZSTD_INCLUDE_DIRS}
     ${LZ4_INCLUDE_DIRS}
-    ${LIBEV_INCLUDE_DIRS}
     ${OPENSSL_INCLUDE_DIR}
     ${LIBYAML_INCLUDE_DIRS}
     ${LIBSSH_INCLUDE_DIRS}
@@ -147,7 +165,6 @@ elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Darwin")
     BZIP2_LIBRARIES
     ZSTD_LIBRARIES
     LZ4_LIBRARIES
-    LIBEV_LIBRARIES
     OPENSSL_CRYPTO_LIBRARY
     OPENSSL_SSL_LIBRARY
     LIBYAML_LIBRARIES
@@ -165,7 +182,6 @@ elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Darwin")
     ${BZIP2_LIBRARIES}
     ${ZSTD_LIBRARIES}
     ${LZ4_LIBRARIES}
-    ${LIBEV_LIBRARIES}
     ${OPENSSL_CRYPTO_LIBRARY}
     ${OPENSSL_SSL_LIBRARY}
     ${LIBYAML_LIBRARIES}
@@ -182,6 +198,11 @@ else()
   add_compile_options(-D_DEFAULT_SOURCE)
   add_compile_options(-D__BSD_VISIBLE)
 
+  # Add kqueue compile flag if available
+  if (HAVE_KQUEUE)
+    add_compile_options(-DHAVE_KQUEUE)
+  endif ()
+
   #
   # Include directories
   #
@@ -191,7 +212,6 @@ else()
     ${BZIP2_INCLUDE_DIRS}
     ${ZSTD_INCLUDE_DIRS}
     ${LZ4_INCLUDE_DIRS}
-    ${LIBEV_INCLUDE_DIRS}
     ${OPENSSL_INCLUDE_DIR}
     ${LIBYAML_INCLUDE_DIRS}
     ${LIBSSH_INCLUDE_DIRS}
@@ -205,7 +225,6 @@ else()
     BZIP2_LIBRARIES
     ZSTD_LIBRARIES
     LZ4_LIBRARIES
-    LIBEV_LIBRARIES
     OPENSSL_CRYPTO_LIBRARY
     OPENSSL_SSL_LIBRARY
     LIBYAML_LIBRARIES
@@ -223,7 +242,6 @@ else()
     ${BZIP2_LIBRARIES}
     ${ZSTD_LIBRARIES}
     ${LZ4_LIBRARIES}
-    ${LIBEV_LIBRARIES}
     ${OPENSSL_CRYPTO_LIBRARY}
     ${OPENSSL_SSL_LIBRARY}
     ${LIBYAML_LIBRARIES}

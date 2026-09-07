@@ -1284,23 +1284,6 @@ cleanup:
    MCTF_FINISH();
 }
 
-MCTF_TEST(test_utils_libev)
-{
-   pgmoneta_libev_engines();
-   // We cannot check EVBACKEND_* constants easily unless included
-
-   // Let's assume constants are available.
-
-   // Test string conversion
-
-   MCTF_ASSERT_STR_EQ(pgmoneta_libev_engine(EVBACKEND_SELECT), "select", cleanup, "libev_engine SELECT failed");
-   MCTF_ASSERT_STR_EQ(pgmoneta_libev_engine(EVBACKEND_POLL), "poll", cleanup, "libev_engine POLL failed");
-   MCTF_ASSERT_STR_EQ(pgmoneta_libev_engine(0xFFFFFFFF), "Unknown", cleanup, "libev_engine Unknown failed");
-
-cleanup:
-   MCTF_FINISH();
-}
-
 MCTF_TEST(test_utils_extract_error)
 {
    struct message* msg = NULL;

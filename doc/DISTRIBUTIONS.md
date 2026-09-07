@@ -6,7 +6,7 @@
 * [gcc](https://gcc.gnu.org) (C17)
 * [cmake](https://cmake.org)
 * [make](https://www.gnu.org/software/make/)
-* [libev](http://software.schmorp.de/pkg/libev.html)
+* [liburing](https://github.com/axboe/liburing) (optional, Linux)
 * [OpenSSL](http://www.openssl.org/)
 * [zlib](https://zlib.net)
 * [zstd](http://www.zstd.net)
@@ -21,7 +21,7 @@
 
 On Fedora, these can be installed using `dnf` or `yum`:
 ```
-dnf install git gcc clang clang-analyzer clang-tools-extra cmake make libev libev-devel openssl openssl-devel systemd systemd-devel zlib zlib-devel libzstd libzstd-devel lz4 lz4-devel libssh libssh-devel python3-docutils libatomic bzip2 bzip2-devel libarchive libarchive-devel libasan libasan-static pandoc texlive-scheme-basic 'tex(footnote.sty)' texlive-babel-spanish
+dnf install git gcc clang clang-analyzer clang-tools-extra cmake make liburing liburing-devel openssl openssl-devel systemd systemd-devel zlib zlib-devel libzstd libzstd-devel lz4 lz4-devel libssh libssh-devel python3-docutils libatomic bzip2 bzip2-devel libarchive libarchive-devel libasan libasan-static pandoc texlive-scheme-basic 'tex(footnote.sty)' texlive-babel-spanish
 ```
 On Rocky, before you install the required packages, some additional repositories, CodeReady Builder and EPEL in this case, need to be enabled or installed first.
 ```
@@ -68,11 +68,21 @@ dnf repolist
 ```
 Install required packages after the previous steps.
 
+On Debian/Ubuntu, `liburing` can be installed using:
+```sh
+sudo apt install liburing-dev
+```
+
+On Alpine, `liburing` can be installed using:
+```sh
+apk add liburing-dev
+```
+
 On FreeBSD, `pkg` is used instead of `dnf` or `yum`.
 
 Use `pkg install <package name>` to install the following packages
 ```
-git gcc cmake libev openssl libssh zlib-ng zstd liblz4 bzip2 py39-docutils libarchive
+git gcc cmake openssl libssh zlib-ng zstd liblz4 bzip2 py39-docutils libarchive
 ```
 
 ## Compile

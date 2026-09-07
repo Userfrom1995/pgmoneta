@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -36,6 +36,7 @@
 #include <console.h>
 #include <configuration.h>
 #include <delete.h>
+#include <ev.h>
 #include <gzip_compression.h>
 #include <info.h>
 #include <keep.h>
@@ -64,7 +65,6 @@
 /* system */
 #include <err.h>
 #include <errno.h>
-#include <ev.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -89,34 +89,34 @@
 #define MAX_FDS        64
 #define SIGNALS_NUMBER 7
 
-static void accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
-static void accept_metrics_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
-static void accept_nagios_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
-static void accept_console_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
-static void accept_management_cb(struct ev_loop* loop, struct ev_io* watcher, int revents);
+static void accept_mgt_cb(struct io_watcher* watcher);
+static void accept_metrics_cb(struct io_watcher* watcher);
+static void accept_nagios_cb(struct io_watcher* watcher);
+static void accept_console_cb(struct io_watcher* watcher);
+static void accept_management_cb(struct io_watcher* watcher);
 struct accept_io;
-static void http_child_serve(struct ev_loop* loop, int client_fd, struct accept_io* ai,
+static void http_child_serve(int client_fd, struct accept_io* ai,
                              const char* title,
                              const char* cert_file, const char* key_file, const char* ca_file,
                              void (*serve_fn)(SSL* ssl, int fd));
-static void accept_http_cb(struct ev_loop* loop, struct ev_io* watcher, int revents,
+static void accept_http_cb(struct io_watcher* watcher,
                            void (*serve_fn)(SSL* ssl, int fd),
                            const char* title,
                            const char* cert_file, const char* key_file, const char* ca_file,
                            void (*restart_fn)(void));
 static void restart_metrics(void);
 static void restart_console(void);
-static void shutdown_cb(struct ev_loop* loop, ev_signal* w, int revents);
-static void reload_cb(struct ev_loop* loop, ev_signal* w, int revents);
-static void coredump_cb(struct ev_loop* loop, ev_signal* w, int revents);
-static void sigchld_cb(struct ev_loop* loop, ev_signal* w, int revents);
-static void retention_cb(struct ev_loop* loop, ev_periodic* w, int revents);
-static void verification_cb(struct ev_loop* loop, ev_periodic* w, int revents);
-static void valid_cb(struct ev_loop* loop, ev_periodic* w, int revents);
-static void wal_streaming_cb(struct ev_loop* loop, ev_periodic* w, int revents);
+static void shutdown_cb(void);
+static void reload_cb(void);
+static void coredump_cb(void);
+static void sigchld_cb(void);
+static void retention_cb(void);
+static void verification_cb(void);
+static void valid_cb(void);
+static void wal_streaming_cb(void);
 static bool accept_fatal(int error);
 static void reload_configuration(bool* restart);
-static void service_reload_cb(struct ev_loop* loop, ev_signal* w, int revents);
+static void service_reload_cb(void);
 static void reload_set_configuration(SSL* ssl, int client_fd, uint8_t compression, uint8_t encryption, struct json* payload);
 static bool reload_services_only(void);
 static void init_receivewals(void);
@@ -127,10 +127,11 @@ static int verify_replication_slot(char* slot_name, int srv, SSL* ssl, int socke
 static int create_pidfile(void);
 static void remove_pidfile(void);
 static void shutdown_ports(bool remove);
+static void stop_io_watcher(struct io_watcher* watcher);
 
 struct accept_io
 {
-   struct ev_io io;
+   struct io_watcher watcher;
    int socket;
    char** argv;
 };
@@ -138,7 +139,7 @@ struct accept_io
 static volatile int keep_running = 1;
 static volatile int stop = 0;
 static char** argv_ptr;
-static struct ev_loop* main_loop = NULL;
+static struct event_loop* main_loop = NULL;
 static struct accept_io io_mgt;
 static int unix_management_socket = -1;
 static struct accept_io io_metrics[MAX_FDS];
@@ -155,13 +156,22 @@ static int* management_fds = NULL;
 static int management_fds_length = -1;
 
 static void
+stop_io_watcher(struct io_watcher* watcher)
+{
+   if (!pgmoneta_event_loop_is_forked())
+   {
+      pgmoneta_io_stop(watcher);
+   }
+}
+
+static void
 start_mgt(void)
 {
    memset(&io_mgt, 0, sizeof(struct accept_io));
-   ev_io_init((struct ev_io*)&io_mgt, accept_mgt_cb, unix_management_socket, EV_READ);
+   pgmoneta_event_accept_init(&io_mgt.watcher, unix_management_socket, accept_mgt_cb);
    io_mgt.socket = unix_management_socket;
    io_mgt.argv = argv_ptr;
-   ev_io_start(main_loop, (struct ev_io*)&io_mgt);
+   pgmoneta_io_start(&io_mgt.watcher);
 }
 
 static void
@@ -171,8 +181,9 @@ shutdown_mgt(bool remove)
 
    config = (struct main_configuration*)shmem;
 
-   ev_io_stop(main_loop, (struct ev_io*)&io_mgt);
+   stop_io_watcher(&io_mgt.watcher);
    pgmoneta_disconnect(unix_management_socket);
+   unix_management_socket = -1;
    errno = 0;
    if (remove)
    {
@@ -189,10 +200,10 @@ start_metrics(void)
       int sockfd = *(metrics_fds + i);
 
       memset(&io_metrics[i], 0, sizeof(struct accept_io));
-      ev_io_init((struct ev_io*)&io_metrics[i], accept_metrics_cb, sockfd, EV_READ);
+      pgmoneta_event_accept_init(&io_metrics[i].watcher, sockfd, accept_metrics_cb);
       io_metrics[i].socket = sockfd;
       io_metrics[i].argv = argv_ptr;
-      ev_io_start(main_loop, (struct ev_io*)&io_metrics[i]);
+      pgmoneta_io_start(&io_metrics[i].watcher);
    }
 }
 
@@ -201,7 +212,7 @@ shutdown_metrics(void)
 {
    for (int i = 0; i < metrics_fds_length; i++)
    {
-      ev_io_stop(main_loop, (struct ev_io*)&io_metrics[i]);
+      stop_io_watcher(&io_metrics[i].watcher);
       pgmoneta_disconnect(io_metrics[i].socket);
       errno = 0;
    }
@@ -214,22 +225,24 @@ start_nagios(void)
    {
       int sockfd = *(nagios_fds + i);
       memset(&io_nagios[i], 0, sizeof(struct accept_io));
-      ev_io_init((struct ev_io*)&io_nagios[i], accept_nagios_cb, sockfd, EV_READ);
+      pgmoneta_event_accept_init(&io_nagios[i].watcher, sockfd, accept_nagios_cb);
       io_nagios[i].socket = sockfd;
       io_nagios[i].argv = argv_ptr;
-      ev_io_start(main_loop, (struct ev_io*)&io_nagios[i]);
+      pgmoneta_io_start(&io_nagios[i].watcher);
    }
 }
+
 static void
 shutdown_nagios(void)
 {
    for (int i = 0; i < nagios_fds_length; i++)
    {
-      ev_io_stop(main_loop, (struct ev_io*)&io_nagios[i]);
+      stop_io_watcher(&io_nagios[i].watcher);
       pgmoneta_disconnect(io_nagios[i].socket);
       errno = 0;
    }
 }
+
 static void
 start_console(void)
 {
@@ -238,10 +251,10 @@ start_console(void)
       int sockfd = *(console_fds + i);
 
       memset(&io_console[i], 0, sizeof(struct accept_io));
-      ev_io_init((struct ev_io*)&io_console[i], accept_console_cb, sockfd, EV_READ);
+      pgmoneta_event_accept_init(&io_console[i].watcher, sockfd, accept_console_cb);
       io_console[i].socket = sockfd;
       io_console[i].argv = argv_ptr;
-      ev_io_start(main_loop, (struct ev_io*)&io_console[i]);
+      pgmoneta_io_start(&io_console[i].watcher);
    }
 }
 
@@ -250,7 +263,7 @@ shutdown_console(bool remove __attribute__((unused)))
 {
    for (int i = 0; i < console_fds_length; i++)
    {
-      ev_io_stop(main_loop, (struct ev_io*)&io_console[i]);
+      stop_io_watcher(&io_console[i].watcher);
       pgmoneta_disconnect(io_console[i].socket);
       errno = 0;
    }
@@ -264,10 +277,10 @@ start_management(void)
       int sockfd = *(management_fds + i);
 
       memset(&io_management[i], 0, sizeof(struct accept_io));
-      ev_io_init((struct ev_io*)&io_management[i], accept_management_cb, sockfd, EV_READ);
+      pgmoneta_event_accept_init(&io_management[i].watcher, sockfd, accept_management_cb);
       io_management[i].socket = sockfd;
       io_management[i].argv = argv_ptr;
-      ev_io_start(main_loop, (struct ev_io*)&io_management[i]);
+      pgmoneta_io_start(&io_management[i].watcher);
    }
 }
 
@@ -276,7 +289,7 @@ shutdown_management(bool remove __attribute__((unused)))
 {
    for (int i = 0; i < management_fds_length; i++)
    {
-      ev_io_stop(main_loop, (struct ev_io*)&io_management[i]);
+      stop_io_watcher(&io_management[i].watcher);
       pgmoneta_disconnect(io_management[i].socket);
       errno = 0;
    }
@@ -327,11 +340,11 @@ main(int argc, char** argv)
    bool metrics_started = false;
    bool console_started = false;
    pid_t pid, sid;
-   struct signal_info signal_watcher[SIGNALS_NUMBER];
-   struct ev_periodic retention;
-   struct ev_periodic valid;
-   struct ev_periodic wal_streaming;
-   struct ev_periodic verification;
+   struct signal_info signal_watcher[SIGNALS_NUMBER] = {0};
+   struct periodic_watcher retention;
+   struct periodic_watcher valid;
+   struct periodic_watcher wal_streaming;
+   struct periodic_watcher verification;
    size_t shmem_size;
    size_t prometheus_cache_shmem_size = 0;
    struct main_configuration* config = NULL;
@@ -806,30 +819,29 @@ main(int argc, char** argv)
       goto error;
    }
 
-   /* libev */
-   main_loop = ev_default_loop(pgmoneta_libev(config->libev));
+   /* Initialize event loop */
+   main_loop = pgmoneta_event_loop_init();
    if (!main_loop)
    {
-      pgmoneta_log_fatal("No loop implementation (%x) (%x)",
-                         pgmoneta_libev(config->libev), ev_supported_backends());
+      pgmoneta_log_fatal("pgmoneta: Failed to initialize event loop");
 #ifdef HAVE_SYSTEMD
-      sd_notifyf(0, "STATUS=No loop implementation (%x) (%x)", pgmoneta_libev(config->libev), ev_supported_backends());
+      sd_notifyf(0, "STATUS=Failed to initialize event loop");
 #endif
       goto error;
    }
 
-   ev_signal_init((struct ev_signal*)&signal_watcher[0], shutdown_cb, SIGTERM);
-   ev_signal_init((struct ev_signal*)&signal_watcher[1], reload_cb, SIGHUP);
-   ev_signal_init((struct ev_signal*)&signal_watcher[2], shutdown_cb, SIGINT);
-   ev_signal_init((struct ev_signal*)&signal_watcher[3], coredump_cb, SIGABRT);
-   ev_signal_init((struct ev_signal*)&signal_watcher[4], shutdown_cb, SIGALRM);
-   ev_signal_init((struct ev_signal*)&signal_watcher[5], service_reload_cb, SIGUSR1);
-   ev_signal_init((struct ev_signal*)&signal_watcher[6], sigchld_cb, SIGCHLD);
+   pgmoneta_signal_init(&signal_watcher[0].signal, shutdown_cb, SIGTERM);
+   pgmoneta_signal_init(&signal_watcher[1].signal, reload_cb, SIGHUP);
+   pgmoneta_signal_init(&signal_watcher[2].signal, shutdown_cb, SIGINT);
+   pgmoneta_signal_init(&signal_watcher[3].signal, coredump_cb, SIGABRT);
+   pgmoneta_signal_init(&signal_watcher[4].signal, shutdown_cb, SIGALRM);
+   pgmoneta_signal_init(&signal_watcher[5].signal, service_reload_cb, SIGUSR1);
+   pgmoneta_signal_init(&signal_watcher[6].signal, sigchld_cb, SIGCHLD);
 
    for (int i = 0; i < SIGNALS_NUMBER; i++)
    {
       signal_watcher[i].slot = -1;
-      ev_signal_start(main_loop, (struct ev_signal*)&signal_watcher[i]);
+      pgmoneta_signal_start(&signal_watcher[i].signal);
    }
 
    if (pgmoneta_tls_valid())
@@ -929,20 +941,20 @@ main(int argc, char** argv)
    init_receivewals();
 
    /* Start to validate server configuration */
-   ev_periodic_init(&valid, valid_cb, 0., 600, 0);
-   ev_periodic_start(main_loop, &valid);
+   pgmoneta_periodic_init(&valid, valid_cb, 600 * 1000, 600 * 1000);
+   pgmoneta_periodic_start(&valid);
 
    /* Start to verify WAL streaming */
-   ev_periodic_init(&wal_streaming, wal_streaming_cb, 0., 60, 0);
-   ev_periodic_start(main_loop, &wal_streaming);
+   pgmoneta_periodic_init(&wal_streaming, wal_streaming_cb, 60 * 1000, 60 * 1000);
+   pgmoneta_periodic_start(&wal_streaming);
 
    /* Start backup retention policy */
-   ev_periodic_init(&retention, retention_cb, 0., config->retention_interval, 0);
-   ev_periodic_start(main_loop, &retention);
+   pgmoneta_periodic_init(&retention, retention_cb, config->retention_interval * 1000, config->retention_interval * 1000);
+   pgmoneta_periodic_start(&retention);
 
    /* Start SHA512 verification job */
-   ev_periodic_init(&verification, verification_cb, 0., pgmoneta_time_convert(config->verification, FORMAT_TIME_S), 0);
-   ev_periodic_start(main_loop, &verification);
+   pgmoneta_periodic_init(&verification, verification_cb, pgmoneta_time_convert(config->verification, FORMAT_TIME_S) * 1000, pgmoneta_time_convert(config->verification, FORMAT_TIME_S) * 1000);
+   pgmoneta_periodic_start(&verification);
 
    pgmoneta_log_info("Started on %s", config->host);
    pgmoneta_log_debug("Management: %d", unix_management_socket);
@@ -958,8 +970,6 @@ main(int argc, char** argv)
    {
       pgmoneta_log_debug("Console: %d", *(console_fds + i));
    }
-   pgmoneta_libev_engines();
-   pgmoneta_log_debug("libev engine: %s", pgmoneta_libev_engine(ev_backend(main_loop)));
    pgmoneta_log_debug("%s", OpenSSL_version(OPENSSL_VERSION));
    pgmoneta_log_debug("Configuration size: %lu", shmem_size);
    pgmoneta_log_debug("Known users: %d", config->common.number_of_users);
@@ -997,10 +1007,8 @@ main(int argc, char** argv)
               (unsigned long)getpid());
 #endif
 
-   while (keep_running)
-   {
-      ev_loop(main_loop, 0);
-   }
+   /* Run event loop */
+   pgmoneta_event_loop_run();
 
    pgmoneta_log_info("Shutdown");
 #ifdef HAVE_SYSTEMD
@@ -1013,12 +1021,17 @@ main(int argc, char** argv)
    shutdown_console(true);
    shutdown_mgt(true);
 
+   pgmoneta_periodic_stop(&verification);
+   pgmoneta_periodic_stop(&retention);
+   pgmoneta_periodic_stop(&wal_streaming);
+   pgmoneta_periodic_stop(&valid);
+
    for (int i = 0; i < SIGNALS_NUMBER; i++)
    {
-      ev_signal_stop(main_loop, (struct ev_signal*)&signal_watcher[i]);
+      pgmoneta_signal_stop(&signal_watcher[i].signal);
    }
 
-   ev_loop_destroy(main_loop);
+   pgmoneta_event_loop_destroy();
 
    free(metrics_fds);
    free(nagios_fds);
@@ -1067,10 +1080,20 @@ error:
       shutdown_management(true);
    }
 
+   for (int i = 0; i < SIGNALS_NUMBER; i++)
+   {
+      pgmoneta_signal_stop(&signal_watcher[i].signal);
+   }
+
    free(metrics_fds);
    free(nagios_fds);
    free(console_fds);
    free(management_fds);
+
+   if (main_loop)
+   {
+      pgmoneta_event_loop_destroy();
+   }
 
    config->running = false;
 
@@ -1089,7 +1112,7 @@ error:
 }
 
 static void
-accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
+accept_mgt_cb(struct io_watcher* watcher)
 {
    struct sockaddr_in6 client_addr;
    socklen_t client_addr_length;
@@ -1109,23 +1132,28 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
    uint8_t compression = MANAGEMENT_COMPRESSION_NONE;
    uint8_t encryption = MANAGEMENT_ENCRYPTION_NONE;
 
-   if (EV_ERROR & revents)
-   {
-      pgmoneta_log_trace("accept_mgt_cb: got invalid event: %s", strerror(errno));
-      return;
-   }
-
    config = (struct main_configuration*)shmem;
    ai = (struct accept_io*)watcher;
 
    memset(&client_addr, 0, sizeof(client_addr));
    client_addr_length = sizeof(client_addr);
-   client_fd = accept(watcher->fd, (struct sockaddr*)&client_addr, &client_addr_length);
+
+   if (watcher->fds.main.client_fd != -1)
+   {
+      client_fd = watcher->fds.main.client_fd;
+      watcher->fds.main.client_fd = -1;
+      getpeername(client_fd, (struct sockaddr*)&client_addr, &client_addr_length);
+   }
+   else
+   {
+      client_fd = accept(watcher->fds.main.listen_fd, (struct sockaddr*)&client_addr, &client_addr_length);
+   }
+
    if (client_fd == -1)
    {
       if (accept_fatal(errno) && keep_running)
       {
-         pgmoneta_log_warn("Restarting management due to: %s (%d)", strerror(errno), watcher->fd);
+         pgmoneta_log_warn("Restarting management due to: %s (%d)", strerror(errno), watcher->fds.main.listen_fd);
 
          shutdown_mgt(false);
 
@@ -1141,7 +1169,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       }
       else
       {
-         pgmoneta_log_debug("accept: %s (%d)", strerror(errno), watcher->fd);
+         pgmoneta_log_debug("accept: %s (%d)", strerror(errno), watcher->fds.main.listen_fd);
       }
       errno = 0;
       return;
@@ -1200,6 +1228,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
             {
                struct json* pyl = NULL;
 
+               pgmoneta_event_loop_fork();
                shutdown_ports(false);
 
                pgmoneta_json_clone(payload, &pyl);
@@ -1249,6 +1278,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          {
             struct json* pyl = NULL;
 
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
 
             pgmoneta_json_clone(payload, &pyl);
@@ -1290,6 +1320,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          {
             struct json* pyl = NULL;
 
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
 
             pgmoneta_json_clone(payload, &pyl);
@@ -1334,6 +1365,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          {
             struct json* pyl = NULL;
 
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
 
             pgmoneta_json_clone(payload, &pyl);
@@ -1376,6 +1408,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          {
             struct json* pyl = NULL;
 
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
 
             pgmoneta_json_clone(payload, &pyl);
@@ -1418,6 +1451,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          {
             struct json* pyl = NULL;
 
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
 
             pgmoneta_json_clone(payload, &pyl);
@@ -1459,6 +1493,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          {
             struct json* pyl = NULL;
 
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
 
             pgmoneta_json_clone(payload, &pyl);
@@ -1470,7 +1505,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       else
       {
          pgmoneta_management_response_error(NULL, client_fd, server, MANAGEMENT_ERROR_VERIFY_NOSERVER, NAME, compression, encryption, payload);
-         pgmoneta_log_error("Restore: No server %s (%d)", server, MANAGEMENT_ERROR_VERIFY_NOSERVER);
+         pgmoneta_log_error("Verify: No server %s (%d)", server, MANAGEMENT_ERROR_VERIFY_NOSERVER);
          goto error;
       }
    }
@@ -1500,6 +1535,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          {
             struct json* pyl = NULL;
 
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
 
             pgmoneta_json_clone(payload, &pyl);
@@ -1531,10 +1567,10 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
 
       pgmoneta_management_response_ok(NULL, client_fd, start_t, end_t, compression, encryption, payload);
 
-      ev_break(loop, EVBREAK_ALL);
+      config->running = false;
       keep_running = 0;
       stop = 1;
-      config->running = false;
+      pgmoneta_event_loop_break();
    }
    else if (id == MANAGEMENT_PING)
    {
@@ -1636,6 +1672,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       {
          struct json* pyl = NULL;
 
+         pgmoneta_event_loop_fork();
          shutdown_ports(false);
 
          pgmoneta_json_clone(payload, &pyl);
@@ -1659,6 +1696,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       {
          struct json* pyl = NULL;
 
+         pgmoneta_event_loop_fork();
          shutdown_ports(false);
 
          pgmoneta_json_clone(payload, &pyl);
@@ -1682,6 +1720,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       {
          struct json* pyl = NULL;
 
+         pgmoneta_event_loop_fork();
          shutdown_ports(false);
 
          pgmoneta_json_clone(payload, &pyl);
@@ -1703,6 +1742,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       {
          struct json* pyl = NULL;
 
+         pgmoneta_event_loop_fork();
          shutdown_ports(false);
 
          pgmoneta_json_clone(payload, &pyl);
@@ -1737,6 +1777,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          {
             struct json* pyl = NULL;
 
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
 
             pgmoneta_json_clone(payload, &pyl);
@@ -1778,6 +1819,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          {
             struct json* pyl = NULL;
 
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
 
             pgmoneta_json_clone(payload, &pyl);
@@ -1806,6 +1848,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       {
          struct json* pyl = NULL;
 
+         pgmoneta_event_loop_fork();
          shutdown_ports(false);
 
          pgmoneta_json_clone(payload, &pyl);
@@ -1827,6 +1870,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       {
          struct json* pyl = NULL;
 
+         pgmoneta_event_loop_fork();
          shutdown_ports(false);
 
          pgmoneta_json_clone(payload, &pyl);
@@ -1848,6 +1892,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       {
          struct json* pyl = NULL;
 
+         pgmoneta_event_loop_fork();
          shutdown_ports(false);
 
          pgmoneta_json_clone(payload, &pyl);
@@ -1872,7 +1917,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
                break;
             default:
                pgmoneta_management_response_error(NULL, client_fd, NULL, MANAGEMENT_ERROR_DECOMPRESS_UNKNOWN, NAME, compression, encryption, payload);
-               pgmoneta_log_error("Decompress: Unknown compression (%d)", MANAGEMENT_ERROR_DECOMPRESS_NOFORK);
+               pgmoneta_log_error("Decompress: Unknown compression (%d)", MANAGEMENT_ERROR_DECOMPRESS_UNKNOWN);
                break;
          }
       }
@@ -1890,6 +1935,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       {
          struct json* pyl = NULL;
 
+         pgmoneta_event_loop_fork();
          shutdown_ports(false);
 
          pgmoneta_json_clone(payload, &pyl);
@@ -1914,7 +1960,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
                break;
             default:
                pgmoneta_management_response_error(NULL, client_fd, NULL, MANAGEMENT_ERROR_COMPRESS_UNKNOWN, NAME, compression, encryption, payload);
-               pgmoneta_log_error("Compress: Unknown compression (%d)", MANAGEMENT_ERROR_DECOMPRESS_NOFORK);
+               pgmoneta_log_error("Compress: Unknown compression (%d)", MANAGEMENT_ERROR_COMPRESS_UNKNOWN);
                break;
          }
       }
@@ -1945,6 +1991,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          {
             struct json* pyl = NULL;
 
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
 
             pgmoneta_json_clone(payload, &pyl);
@@ -1986,6 +2033,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
          {
             struct json* pyl = NULL;
 
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
 
             pgmoneta_json_clone(payload, &pyl);
@@ -2138,6 +2186,7 @@ accept_mgt_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       {
          struct json* pyl = NULL;
 
+         pgmoneta_event_loop_fork();
          shutdown_ports(false);
 
          pgmoneta_json_clone(payload, &pyl);
@@ -2169,14 +2218,17 @@ error:
 }
 
 static void
-http_child_serve(struct ev_loop* loop, int client_fd, struct accept_io* ai, const char* title,
+http_child_serve(int client_fd, struct accept_io* ai, const char* title,
                  const char* cert_file, const char* key_file, const char* ca_file,
                  void (*serve_fn)(SSL* ssl, int fd))
 {
    SSL_CTX* ctx = NULL;
    SSL* client_ssl = NULL;
 
-   ev_loop_fork(loop);
+   if (main_loop)
+   {
+      pgmoneta_event_loop_fork();
+   }
 
    shutdown_ports(false);
 
@@ -2200,10 +2252,11 @@ http_child_serve(struct ev_loop* loop, int client_fd, struct accept_io* ai, cons
 
    pgmoneta_set_proc_title(1, ai->argv, (char*)title, NULL);
    serve_fn(client_ssl, client_fd);
+   exit(0);
 }
 
 static void
-accept_http_cb(struct ev_loop* loop, struct ev_io* watcher, int revents,
+accept_http_cb(struct io_watcher* watcher,
                void (*serve_fn)(SSL* ssl, int fd),
                const char* title,
                const char* cert_file, const char* key_file, const char* ca_file,
@@ -2214,28 +2267,29 @@ accept_http_cb(struct ev_loop* loop, struct ev_io* watcher, int revents,
    int client_fd;
    struct accept_io* ai;
 
-   if (EV_ERROR & revents)
-   {
-      pgmoneta_log_debug("accept_%s_cb: invalid event: %s", title, strerror(errno));
-      errno = 0;
-      return;
-   }
-
    ai = (struct accept_io*)watcher;
 
    memset(&client_addr, 0, sizeof(client_addr));
    client_addr_length = sizeof(client_addr);
-   client_fd = accept(watcher->fd, (struct sockaddr*)&client_addr, &client_addr_length);
+   if (watcher->fds.main.client_fd != -1)
+   {
+      client_fd = watcher->fds.main.client_fd;
+      watcher->fds.main.client_fd = -1;
+   }
+   else
+   {
+      client_fd = accept(watcher->fds.main.listen_fd, (struct sockaddr*)&client_addr, &client_addr_length);
+   }
    if (client_fd == -1)
    {
       if (accept_fatal(errno) && keep_running)
       {
-         pgmoneta_log_warn("Restarting listening port due to: %s (%d)", strerror(errno), watcher->fd);
+         pgmoneta_log_warn("Restarting listening port due to: %s (%d)", strerror(errno), watcher->fds.main.listen_fd);
          restart_fn();
       }
       else
       {
-         pgmoneta_log_debug("accept: %s (%d)", strerror(errno), watcher->fd);
+         pgmoneta_log_debug("accept: %s (%d)", strerror(errno), watcher->fds.main.listen_fd);
       }
       errno = 0;
       return;
@@ -2243,7 +2297,7 @@ accept_http_cb(struct ev_loop* loop, struct ev_io* watcher, int revents,
 
    if (!fork())
    {
-      http_child_serve(loop, client_fd, ai, title, cert_file, key_file, ca_file, serve_fn);
+      http_child_serve(client_fd, ai, title, cert_file, key_file, ca_file, serve_fn);
    }
 
    pgmoneta_disconnect(client_fd);
@@ -2313,40 +2367,41 @@ restart_console(void)
 }
 
 static void
-accept_metrics_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
+accept_metrics_cb(struct io_watcher* watcher)
 {
    struct main_configuration* config = (struct main_configuration*)shmem;
 
-   accept_http_cb(loop, watcher, revents, pgmoneta_prometheus, "metrics",
+   accept_http_cb(watcher, pgmoneta_prometheus, "metrics",
                   config->metrics_cert_file, config->metrics_key_file,
                   config->metrics_ca_file, restart_metrics);
 }
 
 static void
-accept_nagios_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
+accept_nagios_cb(struct io_watcher* watcher)
 {
    struct sockaddr_in6 client_addr;
    socklen_t client_addr_length;
    int client_fd;
    struct main_configuration* config;
 
-   if (EV_ERROR & revents)
-   {
-      pgmoneta_log_debug("accept_nagios_cb: invalid event: %s", strerror(errno));
-      errno = 0;
-      return;
-   }
-
    config = (struct main_configuration*)shmem;
 
    memset(&client_addr, 0, sizeof(client_addr));
    client_addr_length = sizeof(client_addr);
-   client_fd = accept(watcher->fd, (struct sockaddr*)&client_addr, &client_addr_length);
+   if (watcher->fds.main.client_fd != -1)
+   {
+      client_fd = watcher->fds.main.client_fd;
+      watcher->fds.main.client_fd = -1;
+   }
+   else
+   {
+      client_fd = accept(watcher->fds.main.listen_fd, (struct sockaddr*)&client_addr, &client_addr_length);
+   }
    if (client_fd == -1)
    {
       if (accept_fatal(errno) && keep_running)
       {
-         pgmoneta_log_warn("Restarting Nagios listening port due to: %s (%d)", strerror(errno), watcher->fd);
+         pgmoneta_log_warn("Restarting Nagios listening port due to: %s (%d)", strerror(errno), watcher->fds.main.listen_fd);
          shutdown_nagios();
          free(nagios_fds);
          nagios_fds = NULL;
@@ -2365,7 +2420,7 @@ accept_nagios_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       }
       else
       {
-         pgmoneta_log_debug("accept: %s (%d)", strerror(errno), watcher->fd);
+         pgmoneta_log_debug("accept: %s (%d)", strerror(errno), watcher->fds.main.listen_fd);
       }
       errno = 0;
       return;
@@ -2373,7 +2428,10 @@ accept_nagios_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
 
    if (!fork())
    {
-      ev_loop_fork(loop);
+      if (main_loop)
+      {
+         pgmoneta_event_loop_fork();
+      }
       shutdown_ports(false);
       pgmoneta_nagios(NULL, client_fd);
       exit(0);
@@ -2381,15 +2439,16 @@ accept_nagios_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
 
    pgmoneta_disconnect(client_fd);
 }
+
 static void
-accept_console_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
+accept_console_cb(struct io_watcher* watcher)
 {
-   accept_http_cb(loop, watcher, revents, pgmoneta_console, "console",
+   accept_http_cb(watcher, pgmoneta_console, "console",
                   NULL, NULL, NULL, restart_console);
 }
 
 static void
-accept_management_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
+accept_management_cb(struct io_watcher* watcher)
 {
    struct sockaddr_in6 client_addr;
    socklen_t client_addr_length;
@@ -2397,25 +2456,31 @@ accept_management_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
    char address[INET6_ADDRSTRLEN];
    struct main_configuration* config;
 
-   if (EV_ERROR & revents)
-   {
-      pgmoneta_log_debug("accept_management_cb: invalid event: %s", strerror(errno));
-      errno = 0;
-      return;
-   }
-
    memset(&address, 0, sizeof(address));
 
    config = (struct main_configuration*)shmem;
 
    memset(&client_addr, 0, sizeof(client_addr));
    client_addr_length = sizeof(client_addr);
-   client_fd = accept(watcher->fd, (struct sockaddr*)&client_addr, &client_addr_length);
+   if (watcher->fds.main.client_fd != -1)
+   {
+      client_fd = watcher->fds.main.client_fd;
+      watcher->fds.main.client_fd = -1;
+      if (getpeername(client_fd, (struct sockaddr*)&client_addr, &client_addr_length) == -1)
+      {
+         pgmoneta_log_debug("getpeername error for fd %d: %s", client_fd, strerror(errno));
+         pgmoneta_snprintf(address, sizeof(address), "%s", "unknown");
+      }
+   }
+   else
+   {
+      client_fd = accept(watcher->fds.main.listen_fd, (struct sockaddr*)&client_addr, &client_addr_length);
+   }
    if (client_fd == -1)
    {
       if (accept_fatal(errno) && keep_running)
       {
-         pgmoneta_log_warn("Restarting listening port due to: %s (%d)", strerror(errno), watcher->fd);
+         pgmoneta_log_warn("Restarting listening port due to: %s (%d)", strerror(errno), watcher->fds.main.listen_fd);
 
          shutdown_management(false);
 
@@ -2444,13 +2509,16 @@ accept_management_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
       }
       else
       {
-         pgmoneta_log_debug("accept: %s (%d)", strerror(errno), watcher->fd);
+         pgmoneta_log_debug("accept: %s (%d)", strerror(errno), watcher->fds.main.listen_fd);
       }
       errno = 0;
       return;
    }
 
-   pgmoneta_get_address((struct sockaddr*)&client_addr, (char*)&address, sizeof(address));
+   if (address[0] == '\0')
+   {
+      pgmoneta_get_address((struct sockaddr*)&client_addr, (char*)&address, sizeof(address));
+   }
 
    if (!fork())
    {
@@ -2458,7 +2526,10 @@ accept_management_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
 
       addr = pgmoneta_append(addr, address);
 
-      ev_loop_fork(loop);
+      if (main_loop)
+      {
+         pgmoneta_event_loop_fork();
+      }
       shutdown_ports(false);
       /* We are leaving the socket descriptor valid such that the client won't reuse it */
       pgmoneta_remote_management(client_fd, addr);
@@ -2469,7 +2540,7 @@ accept_management_cb(struct ev_loop* loop, struct ev_io* watcher, int revents)
 }
 
 static void
-sigchld_cb(struct ev_loop* loop __attribute__((unused)), ev_signal* w __attribute__((unused)), int revents __attribute__((unused)))
+sigchld_cb(void)
 {
    while (waitpid(-1, NULL, WNOHANG) > 0)
    {
@@ -2478,16 +2549,17 @@ sigchld_cb(struct ev_loop* loop __attribute__((unused)), ev_signal* w __attribut
 }
 
 static void
-shutdown_cb(struct ev_loop* loop, ev_signal* w, int revents)
+shutdown_cb(void)
 {
    struct main_configuration* config;
 
    config = (struct main_configuration*)shmem;
 
-   pgmoneta_log_debug("shutdown requested (%p, %p, %d)", loop, w, revents);
-   ev_break(loop, EVBREAK_ALL);
-   keep_running = 0;
+   pgmoneta_log_debug("pgmoneta: shutdown requested");
    config->running = false;
+   keep_running = 0;
+   stop = 1;
+   pgmoneta_event_loop_break();
 }
 
 static void
@@ -2499,7 +2571,6 @@ reload_set_configuration(SSL* ssl, int client_fd, uint8_t compression, uint8_t e
    if (pgmoneta_conf_set(ssl, client_fd, compression, encryption, payload, &restart_required))
    {
       goto error;
-      pgmoneta_log_debug("pgmoneta: configuration changes applied successfully");
    }
 
    // Only restart services if config change succeeded AND no restart required
@@ -2623,78 +2694,60 @@ error:
 }
 
 static void
-service_reload_cb(struct ev_loop* loop, ev_signal* w, int revents)
+service_reload_cb(void)
 {
-   pgmoneta_log_debug("pgmoneta: service restart requested (%p, %p, %d)", loop, w, revents);
+   pgmoneta_log_debug("pgmoneta: service restart requested");
    reload_services_only();
 }
 
 static void
-reload_cb(struct ev_loop* loop, ev_signal* w, int revents)
+reload_cb(void)
 {
    bool restart = false;
-   pgmoneta_log_debug("reload requested (%p, %p, %d)", loop, w, revents);
+   pgmoneta_log_debug("reload requested");
    reload_configuration(&restart);
 }
 
 static void
-coredump_cb(struct ev_loop* loop, ev_signal* w, int revents)
+coredump_cb(void)
 {
-   pgmoneta_log_info("core dump requested (%p, %p, %d)", loop, w, revents);
+   pgmoneta_log_info("core dump requested");
    remove_pidfile();
    abort();
 }
 
 static void
-retention_cb(struct ev_loop* loop __attribute__((unused)), ev_periodic* w __attribute__((unused)), int revents)
+retention_cb(void)
 {
-   if (EV_ERROR & revents)
-   {
-      pgmoneta_log_trace("retention_cb: got invalid event: %s", strerror(errno));
-      errno = 0;
-      return;
-   }
-
    if (!fork())
    {
+      pgmoneta_event_loop_fork();
       shutdown_ports(false);
       pgmoneta_retention(argv_ptr);
    }
 }
 
 static void
-verification_cb(struct ev_loop* loop __attribute__((unused)), ev_periodic* w __attribute__((unused)), int revents)
+verification_cb(void)
 {
-   if (EV_ERROR & revents)
-   {
-      pgmoneta_log_trace("verification_cb: got invalid event: %s", strerror(errno));
-      errno = 0;
-      return;
-   }
-
    if (!fork())
    {
+      pgmoneta_event_loop_fork();
       shutdown_ports(false);
       pgmoneta_sha512_verification(argv_ptr);
    }
 }
 
 static void
-valid_cb(struct ev_loop* loop __attribute__((unused)), ev_periodic* w __attribute__((unused)), int revents)
+valid_cb(void)
 {
    struct main_configuration* config;
 
    config = (struct main_configuration*)shmem;
 
-   if (EV_ERROR & revents)
-   {
-      pgmoneta_log_trace("valid_cb: got invalid event: %s", strerror(errno));
-      errno = 0;
-      return;
-   }
-
    if (!fork())
    {
+      pgmoneta_event_loop_fork();
       shutdown_ports(false);
       pgmoneta_start_logging();
       pgmoneta_memory_init();
@@ -2758,19 +2811,13 @@ valid_cb(struct ev_loop* loop __attribute__((unused)), ev_periodic* w __attribut
 }
 
 static void
-wal_streaming_cb(struct ev_loop* loop __attribute__((unused)), ev_periodic* w __attribute__((unused)), int revents)
+wal_streaming_cb(void)
 {
    bool start = false;
    int follow;
    struct main_configuration* config;
 
    config = (struct main_configuration*)shmem;
-
-   if (EV_ERROR & revents)
-   {
-      pgmoneta_log_trace("wal_streaming_cb: got invalid event: %s", strerror(errno));
-      return;
-   }
 
    for (int i = 0; i < config->common.number_of_servers; i++)
    {
@@ -2833,10 +2880,11 @@ wal_streaming_cb(struct ev_loop* loop __attribute__((unused)), ev_periodic* w __
             if (pid == -1)
             {
                /* No process */
-               pgmoneta_log_error("pgmoenta: WAL - Cannot create process");
+               pgmoneta_log_error("pgmoneta: WAL - Cannot create process");
             }
             else if (pid == 0)
             {
+               pgmoneta_event_loop_fork();
                shutdown_ports(false);
                pgmoneta_wal(i, argv_ptr);
             }
@@ -3024,6 +3072,7 @@ init_receivewal(int server)
          }
          else if (pid == 0)
          {
+            pgmoneta_event_loop_fork();
             shutdown_ports(false);
             pgmoneta_wal(server, argv_ptr);
          }

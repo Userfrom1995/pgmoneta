@@ -220,8 +220,15 @@ metrics_key_file
 metrics_ca_file
   Certificate Authority (CA) file for TLS for Prometheus metrics
 
-libev
-  The libev backend to use. Valid options: auto, select, poll, epoll, iouring, devpoll and port. Default is auto
+ev_backend
+  The event loop backend to use. Valid options:
+
+  * auto: Automatically select the platform default (epoll on Linux, kqueue on BSD/macOS)
+  * io_uring: Linux asynchronous I/O interface via liburing >= 2.5 (opt-in; falls back to epoll if unsupported)
+  * epoll: Standard Linux I/O event notification facility
+  * kqueue: Scalable kernel event notification mechanism on FreeBSD, OpenBSD, and macOS
+
+  Default is auto. Note that changes to ev_backend require a restart of pgmoneta.
 
 keep_alive
   Have SO_KEEPALIVE on sockets. Default is on
@@ -301,7 +308,7 @@ hot_standby_tablespaces
 
 workers
   The number of workers that each process can use for its work.
-  Use 0 to disable, -1 means use the global settting.  Maximum is CPU count.
+  Use 0 to disable, -1 means use the global setting.  Maximum is CPU count.
   Default is -1
 
 max_rate

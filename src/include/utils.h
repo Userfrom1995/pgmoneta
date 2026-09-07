@@ -38,6 +38,7 @@ extern "C" {
 #include <files.h>
 #include <message.h>
 #include <workers.h>
+#include <ev.h>
 
 #include <stdbool.h>
 #include <openssl/asn1.h>
@@ -80,8 +81,8 @@ extern "C" {
  */
 struct signal_info
 {
-   struct ev_signal signal; /**< The libev base type */
-   int slot;                /**< The slot */
+   struct signal_watcher signal; /**< The signal watcher */
+   int slot;                     /**< The slot */
 };
 
 /** @struct pgmoneta_command
@@ -420,28 +421,6 @@ pgmoneta_bigendian(void);
  */
 unsigned int
 pgmoneta_swap(unsigned int i);
-
-/**
- * Print the available libev engines
- */
-void
-pgmoneta_libev_engines(void);
-
-/**
- * Get the constant for a libev engine
- * @param engine The name of the engine
- * @return The constant
- */
-unsigned int
-pgmoneta_libev(char* engine);
-
-/**
- * Get the name for a libev engine
- * @param val The constant
- * @return The name
- */
-char*
-pgmoneta_libev_engine(unsigned int val);
 
 /**
  * Get the home directory

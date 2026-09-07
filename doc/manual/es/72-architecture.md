@@ -106,11 +106,18 @@ AuthenticationSASLFinal y AuthenticationOk. El mensaje SSLRequest es soportado.
 
 La interfaz de gestión remota se define en [remote.h][remote_h] ([remote.c][remote_c]).
 
-### Uso de libev
+### Arquitectura del bucle de eventos
 
-[libev][libev] se utiliza para manejar interacciones de red, que se "activa" en un evento `EV_READ`.
+pgmoneta utiliza un bucle de eventos personalizado implementado en [ev.h][ev_h] ([ev.c][ev_c]) para manejar interacciones de red, notificaciones de señales y temporizadores periódicos.
 
-Cada proceso tiene su propio bucle de eventos, de modo que el proceso solo recibe notificaciones cuando los datos relacionados solo con ese proceso están listos. El bucle principal maneja los "servicios" de todo el sistema como verificaciones de tiempo de inactividad y así sucesivamente.
+El bucle de eventos personalizado admite múltiples backends según el sistema operativo:
+* `io_uring`: Interfaz de E/S asíncrona de alto rendimiento para sistemas Linux con `liburing >= 2.5`.
+* `epoll`: Mecanismo estándar de notificación de eventos de E/S de Linux, que actúa como alternativa cuando `io_uring` no está disponible.
+* `kqueue`: Mecanismo escalable de notificación de eventos en FreeBSD, OpenBSD y macOS.
+
+El backend activo se puede configurar mediante el parámetro `ev_backend` (`auto`, `io_uring`, `epoll` o `kqueue`).
+
+Cada proceso mantiene su propia instancia del bucle de eventos, asegurando el aislamiento para que un proceso solo sea notificado de sus propios eventos. El bucle principal maneja operaciones globales del sistema como la aceptación de conexiones y temporizadores periódicos, mientras que los procesos trabajadores ejecutan su propio bucle para gestionar la comunicación con el cliente.
 
 ### Señales
 
@@ -128,7 +135,7 @@ Sin embargo, algunos parámetros de configuración requieren un reinicio complet
 
 * `hugepage`
 * `direct_io`
-* `libev`
+* `ev_backend`
 * `log_path`
 * `log_type`
 * `unix_socket_dir`

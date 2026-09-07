@@ -673,7 +673,7 @@ if [[ "$SUBCOMMAND" == "setup" ]]; then
       clang-analyzer \
       cmake \
       make \
-      libev libev-devel \
+      liburing-devel pkgconf-pkg-config \
       openssl openssl-devel \
       systemd systemd-devel \
       zlib zlib-devel \

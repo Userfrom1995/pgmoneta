@@ -48,7 +48,7 @@ RUN rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch
         bzip2-devel \
         libpq \
         libpq-devel \
-        libev-devel \
+        liburing-devel \
         python3-docutils \
         pandoc \
         texlive \
@@ -83,7 +83,7 @@ RUN dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-10-
     dnf install -y postgresql18-server \
         postgresql18-contrib \
         libpq5 \
-        libev \
+        liburing \
         libatomic \
         libssh \
         ncurses-libs && \

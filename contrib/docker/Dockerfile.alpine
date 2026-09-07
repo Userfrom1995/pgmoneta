@@ -45,7 +45,7 @@ RUN apk update && \
     libpq \
     libpq-dev \
     musl-dev \
-    libev-dev \
+    liburing-dev \
     py-docutils \
     pandoc \
     texlive texmf-dist \
@@ -77,7 +77,7 @@ RUN apk update && \
     postgresql18-client \
     bash \
     ca-certificates \
-    libev \
+    liburing \
     yaml \
     bzip2 \
     bzip2-dev \

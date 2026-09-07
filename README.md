@@ -92,7 +92,7 @@ guide for first-run configuration once the package is installed.
 - [clang](https://clang.llvm.org/) (or [gcc](https://gcc.gnu.org))
 - [cmake](https://cmake.org)
 - [make](https://www.gnu.org/software/make/)
-- [libev](http://software.schmorp.de/pkg/libev.html)
+- [liburing](https://github.com/axboe/liburing) (optional, Linux)
 - [OpenSSL](http://www.openssl.org/)
 - [zlib](https://zlib.net)
 - [zstd](http://www.zstd.net)
@@ -112,7 +112,7 @@ guide for first-run configuration once the package is installed.
 
 ```sh
 dnf install git gcc clang clang-analyzer clang-tools-extra cmake make \
-            libev libev-devel openssl openssl-devel \
+            liburing liburing-devel openssl openssl-devel \
             systemd systemd-devel zlib zlib-devel \
             libzstd libzstd-devel lz4 lz4-devel \
             libssh libssh-devel python3-docutils libatomic \
@@ -181,7 +181,7 @@ PDFs of the documentation are available on our
 
 - A process model
 - A shared memory model across processes
-- [libev](http://software.schmorp.de/pkg/libev.html) for fast network interactions
+- A custom event loop (`io_uring`, `epoll`, `kqueue`) for fast network interactions
 - [Atomic operations](https://en.cppreference.com/w/c/atomic) to keep track of state
 
 See [Architecture](https://github.com/pgmoneta/pgmoneta/blob/main/doc/ARCHITECTURE.md)

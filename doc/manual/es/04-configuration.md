@@ -159,7 +159,6 @@ Nota: Si `host` comienza con un `/`, representa una ruta y `pgmoneta` se conecta
 | tls_cert_file | | String | No | Archivo de certificado para TLS. Este archivo debe ser propiedad del usuario que ejecuta pgmoneta o root. |
 | tls_key_file | | String | No | Archivo de clave privada para TLS. Este archivo debe ser propiedad del usuario que ejecuta pgmoneta o root. Además, los permisos deben ser al menos `0640` si es propiedad de root o `0600` en caso contrario. |
 | tls_ca_file | | String | No | Archivo de Autoridad de Certificación (CA) para TLS. Este archivo debe ser propiedad del usuario que ejecuta pgmoneta o root.  |
-| libev | `auto` | String | No | Selecciona el backend de [libev](http://software.schmorp.de/pkg/libev.html) a usar. Opciones válidas: `auto`, `select`, `poll`, `epoll`, `iouring`, `devpoll` y `port` |
 
 **Miscelánea (Miscellaneous)**
 
@@ -174,6 +173,7 @@ Nota: Si `host` comienza con un `/`, representa una ruta y `pgmoneta` se conecta
 | backlog | 16 | Int | No | El backlog para `listen()`. Mínimo `16` |
 | hugepage | `try` | String | No | Soporte de página grande (`off`, `try`, `on`) |
 | direct_io | `off` | String | No | Soporte de Direct I/O para almacenamiento local (`off`, `auto`, `on`). Cuando está `on`, evita la caché de páginas del kernel usando O_DIRECT para una mejor predictibilidad de I/O. Cuando está `auto`, intenta O_DIRECT y retrocede a I/O en búfer si no es compatible. Solo Linux; otras plataformas siempre usan I/O en búfer. |
+| ev_backend | `auto` | String | No | El backend del bucle de eventos a usar. Opciones válidas: `auto`, `io_uring`, `epoll`, `kqueue` |
 | pidfile | | String | No | Ruta al archivo PID. Si no se especifica, se establecerá automáticamente a `unix_socket_dir/pgmoneta.<host>.pid` donde `<host>` es el valor del parámetro `host` u `all` si `host = *`.|
 | update_process_title | `verbose` | String | No | El comportamiento para actualizar el título del proceso del sistema operativo. Las configuraciones permitidas son: `never` (u `off`), no actualiza el título del proceso; `strict` para establecer el título del proceso sin reemplazar la longitud del título del proceso inicial existente; `minimal` para establecer el título del proceso a la descripción base; `verbose` (o `full`) para establecer el título del proceso a la descripción completa. Tenga en cuenta que `strict` y `minimal` se honran solo en aquellos sistemas que no proporcionan una forma nativa de establecer el título del proceso (por ejemplo, Linux). En otros sistemas, no hay diferencia entre `strict` y `minimal` y el comportamiento asumido es `minimal` incluso si se usa `strict`. `never` y `verbose` siempre se honran en todos los sistemas. En sistemas Linux, el título del proceso siempre se trunca a 255 caracteres, mientras que en sistemas que proporcionan una forma nativa de establecer el título del proceso puede ser más largo. |
 

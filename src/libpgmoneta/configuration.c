@@ -31,6 +31,7 @@
 #include <aes.h>
 #include <compression.h>
 #include <configuration.h>
+#include <ev.h>
 #include <json.h>
 #include <logging.h>
 #include <management.h>
@@ -94,6 +95,10 @@ static int as_bytes(char* str, int* bytes, int default_bytes);
 static int as_retention(char* str, int* days, int* weeks, int* months, int* years);
 static int as_create_slot(char* str, int* create_slot);
 static char* get_retention_string(int rt_days, int rt_weeks, int rt_months, int rt_year);
+static ev_backend_t as_ev_backend(char* str);
+static bool is_supported_backend(ev_backend_t backend);
+static void validate_event_backend(struct main_configuration* config);
+static const char* ev_backend_to_string(ev_backend_t backend);
 
 static bool transfer_configuration(struct main_configuration* config, struct main_configuration* reload);
 static int copy_server(struct server* dst, struct server* src);
@@ -116,6 +121,7 @@ static int to_log_type(char* where, int value);
 static int to_log_level(char* where, int value);
 static int to_log_mode(char* where, int value);
 static int to_update_process_title(char* where, int value);
+static int to_ev_backend(char* where, int value);
 
 static int apply_configuration(char* config_key, char* config_value, struct config_key_info* key_info, bool* restart_required);
 
@@ -204,6 +210,7 @@ pgmoneta_init_main_configuration(void* shm)
    config->backlog = 16;
    config->hugepage = HUGEPAGE_TRY;
    config->direct_io = DIRECT_IO_OFF;
+   config->ev_backend = PGMONETA_EVENT_BACKEND_AUTO;
 
    config->update_process_title = UPDATE_PROCESS_TITLE_VERBOSE;
 
@@ -1094,16 +1101,11 @@ pgmoneta_read_main_configuration(void* shm, char* filename)
                      unknown = true;
                   }
                }
-               else if (pgmoneta_compare_string(key, "libev"))
+               else if (pgmoneta_compare_string(key, "ev_backend"))
                {
                   if (pgmoneta_compare_string(section, "pgmoneta"))
                   {
-                     max = strlen(value);
-                     if (max > MISC_LENGTH - 1)
-                     {
-                        max = MISC_LENGTH - 1;
-                     }
-                     memcpy(config->libev, value, max);
+                     config->ev_backend = as_ev_backend(value);
                   }
                   else
                   {
@@ -2152,6 +2154,9 @@ pgmoneta_validate_main_configuration(void* shm)
       pgmoneta_log_fatal("verification cannot be less than 0");
       return 1;
    }
+
+   validate_event_backend(config);
+
    return 0;
 }
 
@@ -3708,6 +3713,33 @@ to_update_process_title(char* where, int value)
    return 0;
 }
 
+static int
+to_ev_backend(char* where, int value)
+{
+   if (!where)
+   {
+      return 1;
+   }
+   switch (value)
+   {
+      case PGMONETA_EVENT_BACKEND_AUTO:
+         snprintf(where, MISC_LENGTH, "%s", "auto");
+         break;
+      case PGMONETA_EVENT_BACKEND_IO_URING:
+         snprintf(where, MISC_LENGTH, "%s", "io_uring");
+         break;
+      case PGMONETA_EVENT_BACKEND_EPOLL:
+         snprintf(where, MISC_LENGTH, "%s", "epoll");
+         break;
+      case PGMONETA_EVENT_BACKEND_KQUEUE:
+         snprintf(where, MISC_LENGTH, "%s", "kqueue");
+         break;
+      default:
+         return 1;
+   }
+   return 0;
+}
+
 static void
 add_configuration_response(struct json* res)
 {
@@ -3768,7 +3800,7 @@ add_configuration_response(struct json* res)
    pgmoneta_json_put(res, CONFIGURATION_ARGUMENT_METRICS_CERT_FILE, (uintptr_t)config->metrics_cert_file, ValueString);
    pgmoneta_json_put(res, CONFIGURATION_ARGUMENT_METRICS_KEY_FILE, (uintptr_t)config->metrics_key_file, ValueString);
    pgmoneta_json_put(res, CONFIGURATION_ARGUMENT_METRICS_CA_FILE, (uintptr_t)config->metrics_ca_file, ValueString);
-   pgmoneta_json_put(res, CONFIGURATION_ARGUMENT_LIBEV, (uintptr_t)config->libev, ValueString);
+   pgmoneta_json_put_enum_value(res, CONFIGURATION_ARGUMENT_EV_BACKEND, config->ev_backend, to_ev_backend);
    pgmoneta_json_put(res, CONFIGURATION_ARGUMENT_MAX_RATE, (uintptr_t)config->max_rate, ValueInt64);
    pgmoneta_json_put(res, CONFIGURATION_ARGUMENT_MANIFEST, (uintptr_t)"SHA512", ValueString);
    pgmoneta_json_put(res, CONFIGURATION_ARGUMENT_KEEP_ALIVE, (uintptr_t)config->common.keep_alive, ValueBool);
@@ -4619,6 +4651,18 @@ apply_main_configuration(struct main_configuration* config, struct server* srv, 
             config->progress = false;
          }
       }
+      else if (pgmoneta_compare_string(key, "ev_backend"))
+      {
+         int t = as_ev_backend(value);
+         if (t < 0)
+         {
+            unknown = true;
+         }
+         else
+         {
+            config->ev_backend = t;
+         }
+      }
       else
       {
          unknown = true;
@@ -4718,6 +4762,13 @@ write_config_value(char* buffer, char* config_key, size_t buffer_size)
          else if (pgmoneta_compare_string(key_info.key, "progress"))
          {
             pgmoneta_snprintf(buffer, buffer_size, "%s", config->progress ? "on" : "off");
+         }
+         else if (pgmoneta_compare_string(key_info.key, "ev_backend"))
+         {
+            if (to_ev_backend(buffer, config->ev_backend))
+            {
+               return 1;
+            }
          }
          else
          {
@@ -6092,6 +6143,138 @@ get_retention_string(int rt_days, int rt_weeks, int rt_months, int rt_year)
    return retention;
 }
 
+static ev_backend_t
+as_ev_backend(char* str)
+{
+   if (is_empty_string(str))
+   {
+      return PGMONETA_EVENT_BACKEND_EMPTY;
+   }
+
+   if (!strncasecmp(str, "auto", MISC_LENGTH))
+   {
+      return PGMONETA_EVENT_BACKEND_AUTO;
+   }
+
+   if (!strncasecmp(str, "io_uring", MISC_LENGTH))
+   {
+      return PGMONETA_EVENT_BACKEND_IO_URING;
+   }
+
+   if (!strncasecmp(str, "epoll", MISC_LENGTH))
+   {
+      return PGMONETA_EVENT_BACKEND_EPOLL;
+   }
+
+   if (!strncasecmp(str, "kqueue", MISC_LENGTH))
+   {
+      return PGMONETA_EVENT_BACKEND_KQUEUE;
+   }
+
+   return PGMONETA_EVENT_BACKEND_INVALID;
+}
+
+static bool
+is_supported_backend(ev_backend_t backend)
+{
+   ev_backend_t supported_backends[] = {
+#if HAVE_LINUX
+#if HAVE_IO_URING
+      PGMONETA_EVENT_BACKEND_IO_URING,
+#endif
+      PGMONETA_EVENT_BACKEND_EPOLL,
+#else
+      PGMONETA_EVENT_BACKEND_KQUEUE,
+#endif
+   };
+
+   for (size_t i = 0; i < sizeof(supported_backends) / sizeof(supported_backends[0]); i++)
+   {
+      if (backend == supported_backends[i])
+      {
+         return true;
+      }
+   }
+
+   return false;
+}
+
+static void
+validate_event_backend(struct main_configuration* config)
+{
+   if (config->ev_backend == PGMONETA_EVENT_BACKEND_INVALID)
+   {
+      pgmoneta_log_warn("Configured event backend is invalid. Default to 'auto'");
+      config->ev_backend = PGMONETA_EVENT_BACKEND_AUTO;
+   }
+
+   if (config->ev_backend == PGMONETA_EVENT_BACKEND_EMPTY)
+   {
+      pgmoneta_log_warn("ev_backend configuration is empty. Default to 'auto'");
+      config->ev_backend = PGMONETA_EVENT_BACKEND_AUTO;
+   }
+
+   if (config->ev_backend == PGMONETA_EVENT_BACKEND_AUTO || !is_supported_backend(config->ev_backend))
+   {
+      if (config->ev_backend != PGMONETA_EVENT_BACKEND_AUTO)
+      {
+         pgmoneta_log_warn("Configured backend '%s' is unsupported", ev_backend_to_string(config->ev_backend));
+      }
+      config->ev_backend = DEFAULT_EVENT_BACKEND;
+   }
+
+#if HAVE_LINUX && HAVE_IO_URING
+   if (config->ev_backend == PGMONETA_EVENT_BACKEND_IO_URING)
+   {
+      FILE* fp;
+      int rval;
+
+      fp = fopen("/proc/sys/kernel/io_uring_disabled", "r");
+      if (fp == NULL)
+      {
+         pgmoneta_log_debug("Failed to open /proc/sys/kernel/io_uring_disabled: %s", strerror(errno));
+         config->ev_backend = PGMONETA_EVENT_BACKEND_EPOLL;
+         return;
+      }
+
+      rval = fgetc(fp);
+      if (fclose(fp) != 0)
+      {
+         pgmoneta_log_warn("Failed to close /proc/sys/kernel/io_uring_disabled: %s", strerror(errno));
+      }
+
+      if (rval == '1' || rval == '2')
+      {
+         pgmoneta_log_warn("io_uring supported but disabled by kernel; falling back to epoll");
+         config->ev_backend = PGMONETA_EVENT_BACKEND_EPOLL;
+      }
+   }
+#endif
+
+   pgmoneta_log_debug("Selected backend '%s'", ev_backend_to_string(config->ev_backend));
+}
+
+static const char*
+ev_backend_to_string(ev_backend_t backend)
+{
+   switch (backend)
+   {
+      case PGMONETA_EVENT_BACKEND_AUTO:
+         return "auto";
+      case PGMONETA_EVENT_BACKEND_IO_URING:
+         return "io_uring";
+      case PGMONETA_EVENT_BACKEND_EPOLL:
+         return "epoll";
+      case PGMONETA_EVENT_BACKEND_KQUEUE:
+         return "kqueue";
+      case PGMONETA_EVENT_BACKEND_EMPTY:
+         return "";
+      case PGMONETA_EVENT_BACKEND_INVALID:
+      default:
+         return "unknown";
+   }
+}
+
 static bool
 transfer_configuration(struct main_configuration* config, struct main_configuration* reload)
 {
@@ -6212,7 +6395,7 @@ transfer_configuration(struct main_configuration* config, struct main_configurat
       restart_string("pidfile", config->pidfile, reload->pidfile);
    }
 
-   if (restart_string("libev", config->libev, reload->libev))
+   if (restart_int("ev_backend", config->ev_backend, reload->ev_backend))
    {
       changed = true;
    }

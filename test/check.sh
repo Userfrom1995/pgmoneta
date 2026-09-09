@@ -67,6 +67,10 @@ USER=$(whoami)
 MODE="dev"
 PORT=6432
 
+# Event loop backend under test (io_uring, epoll, kqueue, auto).
+# CI sets TEST_EVENT_BACKEND per matrix job; defaults to auto.
+EVENT_BACKEND="${TEST_EVENT_BACKEND:-auto}"
+
 # Use sudo only when not running as root (CI containers run as root)
 if [ "$(id -u)" -eq 0 ]; then
   SUDO=""
@@ -328,6 +332,7 @@ log_path = $LOG_DIR/pgmoneta.log
 unix_socket_dir = /tmp/
 create_slot = yes
 workspace = $WORKSPACE_DIRECTORY
+ev_backend = $EVENT_BACKEND
 
 # primary configuration
 [primary]

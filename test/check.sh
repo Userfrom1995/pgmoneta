@@ -944,6 +944,7 @@ if [[ "$SUBCOMMAND" == "ci" ]]; then
    MODE="ci"
    PORT=5432
    run_perf
+   exit 0
 fi
 # Default: run backup perf (dev, container PostgreSQL)
 detect_container_engine

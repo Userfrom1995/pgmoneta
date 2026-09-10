@@ -45,7 +45,6 @@ TEST_PG_DIRECTORY="$PROJECT_DIRECTORY/test/postgresql/src/postgresql$PG_VERSION"
 
 PGMONETA_ROOT_DIR="/tmp/pgmoneta-test"
 BASE_DIR="$PGMONETA_ROOT_DIR/base"
-COVERAGE_DIR="$PGMONETA_ROOT_DIR/coverage"
 LOG_DIR="$PGMONETA_ROOT_DIR/log"
 PG_LOG_DIR="$PGMONETA_ROOT_DIR/pg_log"
 RETROSPECT_DIR="$PGMONETA_ROOT_DIR/retrospect"
@@ -126,50 +125,7 @@ cleanup() {
         rm -Rf "$BASE_DIR"
       fi
 
-      if ls "$COVERAGE_DIR"/*.profraw >/dev/null 2>&1; then
-       if command -v llvm-profdata >/dev/null 2>&1 && command -v llvm-cov >/dev/null 2>&1; then
-         echo "Generating coverage report, expect error when the binary is not covered at all"
-         llvm-profdata merge -sparse $COVERAGE_DIR/*.profraw -o $COVERAGE_DIR/coverage.profdata 2>/dev/null || true
-
-         echo "Generating $COVERAGE_DIR/coverage-report-libpgmoneta.txt"
-         llvm-cov report $EXECUTABLE_DIRECTORY/libpgmoneta.so \
-           --instr-profile=$COVERAGE_DIR/coverage.profdata \
-           --format=text > $COVERAGE_DIR/coverage-report-libpgmoneta.txt 2>/dev/null || true
-         echo "Generating $COVERAGE_DIR/coverage-report-pgmoneta.txt"
-         llvm-cov report $EXECUTABLE_DIRECTORY/pgmoneta \
-           --instr-profile=$COVERAGE_DIR/coverage.profdata \
-           --format=text > $COVERAGE_DIR/coverage-report-pgmoneta.txt 2>/dev/null || true
-        echo "Generating $COVERAGE_DIR/coverage-report-pgmoneta-cli.txt"
-        llvm-cov report $EXECUTABLE_DIRECTORY/pgmoneta-cli \
-           --instr-profile=$COVERAGE_DIR/coverage.profdata \
-           --format=text > $COVERAGE_DIR/coverage-report-pgmoneta-cli.txt 2>/dev/null || true
-        echo "Generating $COVERAGE_DIR/coverage-report-pgmoneta-admin.txt"
-        llvm-cov report $EXECUTABLE_DIRECTORY/pgmoneta-admin \
-           --instr-profile=$COVERAGE_DIR/coverage.profdata \
-           --format=text > $COVERAGE_DIR/coverage-report-pgmoneta-admin.txt 2>/dev/null || true
-
-         echo "Generating $COVERAGE_DIR/coverage-libpgmoneta.txt"
-         llvm-cov show $EXECUTABLE_DIRECTORY/libpgmoneta.so \
-           --instr-profile=$COVERAGE_DIR/coverage.profdata \
-           --format=text > $COVERAGE_DIR/coverage-libpgmoneta.txt 2>/dev/null || true
-         echo "Generating $COVERAGE_DIR/coverage-pgmoneta.txt"
-         llvm-cov show $EXECUTABLE_DIRECTORY/pgmoneta \
-           --instr-profile=$COVERAGE_DIR/coverage.profdata \
-           --format=text > $COVERAGE_DIR/coverage-pgmoneta.txt 2>/dev/null || true
-        echo "Generating $COVERAGE_DIR/coverage-pgmoneta-cli.txt"
-        llvm-cov show $EXECUTABLE_DIRECTORY/pgmoneta-cli \
-           --instr-profile=$COVERAGE_DIR/coverage.profdata \
-           --format=text > $COVERAGE_DIR/coverage-pgmoneta-cli.txt 2>/dev/null || true
-        echo "Generating $COVERAGE_DIR/coverage-pgmoneta-admin.txt"
-        llvm-cov show $EXECUTABLE_DIRECTORY/pgmoneta-admin \
-           --instr-profile=$COVERAGE_DIR/coverage.profdata \
-           --format=text > $COVERAGE_DIR/coverage-pgmoneta-admin.txt 2>/dev/null || true
-         echo "Coverage --> $COVERAGE_DIR"
-       else
-         echo "Coverage tools (llvm-profdata, llvm-cov) not found, skipping coverage report generation"
-       fi
-     fi
-     echo "Logs --> $LOG_DIR, $PG_LOG_DIR"
+      echo "Logs --> $LOG_DIR, $PG_LOG_DIR"
    else
      echo "$PGMONETA_ROOT_DIR not present ... ok"
    fi
@@ -457,9 +413,8 @@ unset_pgmoneta_test_variables() {
   unset PGMONETA_TEST_USER_CONF
   unset PGMONETA_TEST_CONF_SAMPLE
   unset PGMONETA_TEST_RESTORE_DIR
-  unset PGMONETA_TEST_HOT_STANDBY_DIR
-  unset LLVM_PROFILE_FILE
-  unset CC
+   unset PGMONETA_TEST_HOT_STANDBY_DIR
+   unset CC
 }
 
 # Returns 0 if setup is already done, 1 if setup is needed.
@@ -507,12 +462,11 @@ do_setup() {
     fi
   fi
 
-  echo "Preparing the pgmoneta directory"
-  export LLVM_PROFILE_FILE="$COVERAGE_DIR/coverage-%p-%m.profraw"
-  chmod -R u+rwx "$PGMONETA_ROOT_DIR" 2>/dev/null || true
-  rm -Rf "$PGMONETA_ROOT_DIR"
-  mkdir -p "$PGMONETA_ROOT_DIR"
-  mkdir -p "$LOG_DIR" "$PG_LOG_DIR" "$COVERAGE_DIR" "$BASE_DIR" "$RETROSPECT_DIR" "$HOT_STANDBY_DIRECTORY"
+   echo "Preparing the pgmoneta directory"
+   chmod -R u+rwx "$PGMONETA_ROOT_DIR" 2>/dev/null || true
+   rm -Rf "$PGMONETA_ROOT_DIR"
+   mkdir -p "$PGMONETA_ROOT_DIR"
+   mkdir -p "$LOG_DIR" "$PG_LOG_DIR" "$BASE_DIR" "$RETROSPECT_DIR" "$HOT_STANDBY_DIRECTORY"
   mkdir -p "$RESTORE_DIRECTORY" "$BACKUP_DIRECTORY" "$CONFIGURATION_DIRECTORY" "$WORKSPACE_DIRECTORY" "$RESOURCE_DIRECTORY" "$PGCONF_DIRECTORY"
   cp -R "$PROJECT_DIRECTORY/test/resource" $BASE_DIR
   cp -R $TEST_PG_DIRECTORY/conf/* $PGCONF_DIRECTORY/
@@ -789,15 +743,13 @@ if [[ "$SUBCOMMAND" == "setup" ]]; then
       bzip2 bzip2-devel \
       libarchive libarchive-devel \
       libasan libasan-static \
-      check check-devel check-static \
-      llvm \
-      libyaml-devel \
+       check check-devel check-static \
+       libyaml-devel \
       ncurses-devel
    exit 0
 fi
 if [[ "$SUBCOMMAND" == "clean" ]]; then
    detect_container_engine
-   rm -Rf $COVERAGE_DIR
    cleanup
    cleanup_postgresql_image
    rm -Rf $PGMONETA_ROOT_DIR

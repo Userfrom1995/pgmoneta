@@ -303,11 +303,7 @@ if (CMAKE_BUILD_TYPE MATCHES Debug)
   add_compile_options(-DDEBUG)
 
   if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
-    message(STATUS "Coverage tools found")
     add_compile_options(-Wextra-semi)
-    add_compile_options(-fprofile-instr-generate)
-    add_compile_options(-fcoverage-mapping)
-    add_link_options(-fprofile-instr-generate)
 
     if (NOT ${CMAKE_SYSTEM_NAME} STREQUAL "OpenBSD")
       if (NOT ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")

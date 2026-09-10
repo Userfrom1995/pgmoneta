@@ -48,7 +48,7 @@ PROJECT_DIRECTORY=$(realpath "$SCRIPT_DIR/..")
 EXECUTABLE_DIRECTORY=${PERF_BIN_DIR:-$PROJECT_DIRECTORY/build/src}
 TEST_PG_DIRECTORY="$PROJECT_DIRECTORY/test/postgresql/src/postgresql$PG_VERSION"
 
-PGMONETA_ROOT_DIR="/tmp/pgmoneta-test"
+PGMONETA_ROOT_DIR="${PGMONETA_TEST_ROOT:-/tmp/pgmoneta-test}"
 BASE_DIR="$PGMONETA_ROOT_DIR/base"
 LOG_DIR="$PGMONETA_ROOT_DIR/log"
 PG_LOG_DIR="$PGMONETA_ROOT_DIR/pg_log"
@@ -310,7 +310,7 @@ ${PERF_EV_KEY:-ev_backend} = $EVENT_BACKEND
 host = localhost
 port = $PORT
 user = $PG_REPL_USER_NAME
-wal_slot = repl
+wal_slot = ${PERF_WAL_SLOT:-repl}
 workers = 4
 hot_standby = $HOT_STANDBY_DIRECTORY
 hot_standby_overrides = $HOT_STANDBY_DIRECTORY/overrides
@@ -818,10 +818,42 @@ run_perf_shell() {
    reps=$reps_raw
    if [[ $reps -lt 1 ]]; then reps=1; fi
    if [[ $reps -gt 10 ]]; then reps=10; fi
-   echo "SCALE=$scale"
-   echo "REPS=$reps"
+    echo "SCALE=$scale"
+    echo "REPS=$reps"
 
-   rows=$((scale * 100000))
+    # Sequential-harness host identity: one line per run, before reps.
+    {
+      _sys_cpu="unknown"
+      _sys_kernel="unknown"
+      _sys_kernel=$(uname -r 2>/dev/null || echo unknown)
+      _sys_model=""
+      if command -v lscpu >/dev/null 2>&1; then
+        _sys_model=$(lscpu 2>/dev/null | awk -F: '/^Model name:/ {sub(/^ +/, "", $2); print $2; exit}' 2>/dev/null || echo unknown)
+        if [[ -n "${_sys_model:-}" && "${_sys_model:-}" != "unknown" ]]; then
+          _sys_cpu="$_sys_model"
+        fi
+      fi
+      _sys_cpu=$(echo "${_sys_cpu:-unknown}" | tr ' \t' '__' 2>/dev/null || echo unknown)
+      _sys_kernel=$(echo "${_sys_kernel:-unknown}" | tr ' \t' '__' 2>/dev/null || echo unknown)
+      if [[ -z "$_sys_cpu" ]]; then _sys_cpu="unknown"; fi
+      if [[ -z "$_sys_kernel" ]]; then _sys_kernel="unknown"; fi
+      echo "SYS_RESULT pg=$PG_VERSION cpu=$_sys_cpu kernel=$_sys_kernel"
+    } || echo "SYS_RESULT pg=$PG_VERSION cpu=unknown kernel=unknown"
+
+    # Dry-run orchestration test: skip ALL PG/psql/server work, emit
+    # synthetic results with valid formats, then return 0.
+    if [[ "${LOOP_DRY_RUN:-0}" == "1" ]]; then
+      echo "LOOP_DRY_RUN=1: emitting synthetic results, skipping PG/psql work"
+      for r in 1 2; do
+        echo "PERF_RESULT build=$build_label backend=$EVENT_BACKEND pg=$PG_VERSION flags=$flags rep=$r ms=1000 bytes=1073741824"
+        echo "CPU_RESULT build=$build_label backend=$EVENT_BACKEND pg=$PG_VERSION flags=$flags rep=$r cpu_s=1.23"
+      done
+      echo "LAT_RESULT build=$build_label backend=$EVENT_BACKEND pg=$PG_VERSION flags=$flags mode=sequential n=500 p50_ms=0.500 p99_ms=1.000 max_ms=2.000"
+      echo "LAT_RESULT build=$build_label backend=$EVENT_BACKEND pg=$PG_VERSION flags=$flags mode=burst n=400 p50_ms=0.600 p99_ms=1.200 max_ms=2.500"
+      return 0
+    fi
+
+    rows=$((scale * 100000))
 
    echo "=== perf seed: DROP + CREATE perf_data ($rows rows) ==="
    # Payload is 4 DISTINCT md5s per row (128 high-entropy hex chars). The old
@@ -1004,7 +1036,15 @@ usage() {
 }
 
 run_perf() {
-  if [[ ! -f "$CONFIGURATION_DIRECTORY/pgmoneta.conf" ]] || [[ ! -x "$EXECUTABLE_DIRECTORY/pgmoneta" ]]; then
+  if [[ "${LOOP_DRY_RUN:-0}" == "1" ]]; then
+    echo "LOOP_DRY_RUN=1: skipping setup/server, synthetic perf only"
+    run_perf_shell
+    return 0
+  fi
+  if [[ "${FORCE_SETUP:-0}" == "1" ]]; then
+    echo "FORCE_SETUP=1: running fresh setup unconditionally"
+    do_setup
+  elif [[ ! -f "$CONFIGURATION_DIRECTORY/pgmoneta.conf" ]] || [[ ! -x "$EXECUTABLE_DIRECTORY/pgmoneta" ]]; then
     echo "Environment incomplete, running build"
     do_setup
   elif [[ -z "${PERF_BIN_DIR:-}" ]] && binaries_stale; then

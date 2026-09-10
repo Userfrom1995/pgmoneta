@@ -1,0 +1,203 @@
+name: Perf Sequential
+
+on:
+  workflow_dispatch:
+
+jobs:
+  perf-seq:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    container:
+      image: rockylinux/rockylinux:10
+      options: --security-opt seccomp=unconfined
+
+    strategy:
+      matrix:
+        pg_version: [14, 15, 17]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Dependencies
+        run: |
+          dnf -y install dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf -y install epel-release
+          dnf -y install \
+            git gcc clang clang-tools-extra cmake make \
+            liburing-devel libev-devel openssl openssl-devel \
+            systemd systemd-devel zlib zlib-devel \
+            libzstd libzstd-devel lz4 lz4-devel \
+            libssh libssh-devel libatomic \
+            python3-docutils bzip2 bzip2-devel \
+            libarchive libarchive-devel libyaml-devel \
+            check check-devel \
+            libasan libubsan \
+            net-tools procps-ng ncurses-devel \
+            util-linux sudo which zstd
+
+      - name: Mark workspace as safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install PostgreSQL v${{ matrix.pg_version }}
+        run: |
+          dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-10-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+          dnf -qy module disable postgresql 2>/dev/null || true
+          dnf install -y postgresql${{ matrix.pg_version }} postgresql${{ matrix.pg_version }}-server postgresql${{ matrix.pg_version }}-contrib postgresql${{ matrix.pg_version }}-libs postgresql${{ matrix.pg_version }}-devel
+
+      - name: Set Env Path Variable
+        run: |
+          echo "PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:$PATH" >> $GITHUB_ENV
+          echo $PATH
+
+      - name: Install pgmoneta_ext
+        run: |
+          git_repo="https://github.com/pgmoneta/pgmoneta_ext.git"
+          cd /tmp/
+          git clone --branch "main" --single-branch --depth 1 "$git_repo"
+          cd /tmp/pgmoneta_ext/
+          mkdir build
+          cd /tmp/pgmoneta_ext/build/
+          cmake -DDOCS=false ..
+          make
+          make install
+
+      - name: Prebuild io_layer base + flag binaries
+        run: |
+          export CC=/usr/bin/clang
+          mkdir -p build
+          cd build
+          cmake -DCMAKE_BUILD_TYPE=Debug -DDOCS=FALSE ..
+          make -j$(nproc)
+          cd ..
+          for f in multishot zerocopy both; do
+            EXTRA_FLAGS=""
+            case "$f" in
+              multishot) EXTRA_FLAGS="-DEXPERIMENTAL_FEATURE_RECV_MULTISHOT_ENABLED=1" ;;
+              zerocopy) EXTRA_FLAGS="-DEXPERIMENTAL_FEATURE_ZERO_COPY_ENABLED=1" ;;
+              both) EXTRA_FLAGS="-DEXPERIMENTAL_FEATURE_RECV_MULTISHOT_ENABLED=1 -DEXPERIMENTAL_FEATURE_ZERO_COPY_ENABLED=1" ;;
+            esac
+            echo "Experimental CFLAGS ($f): $EXTRA_FLAGS"
+            mkdir -p "build-f-$f"
+            cd "build-f-$f"
+            cmake -DCMAKE_BUILD_TYPE=Debug -DDOCS=FALSE -DCMAKE_C_FLAGS="$EXTRA_FLAGS" ..
+            make -j$(nproc)
+            cd ..
+          done
+
+      - name: Build main-branch baseline
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rm -rf /tmp/pgmoneta-main
+          git clone --branch main --single-branch --depth 1 \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" \
+            /tmp/pgmoneta-main
+          cd /tmp/pgmoneta-main
+          BASE_SHA=$(git rev-parse HEAD)
+          echo "Baseline pinned to main HEAD: $BASE_SHA"
+          echo "BASE_SHA=$BASE_SHA" >> $GITHUB_ENV
+          echo "$BASE_SHA" > /tmp/baseline-sha.txt
+          mkdir -p /tmp/pgmoneta-main/build
+          cd /tmp/pgmoneta-main/build
+          export CC=/usr/bin/clang
+          cmake -DCMAKE_BUILD_TYPE=Debug -DDOCS=FALSE ..
+          make -j$(nproc)
+
+      - name: Create test user
+        run: |
+          useradd -m -s /bin/bash runner
+          echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+          chown -R runner:runner $GITHUB_WORKSPACE
+          chown -R runner:runner /tmp/pgmoneta-main
+
+      - name: Run sequential loop (8 cells same-box)
+        timeout-minutes: 300
+        run: |
+          # Same-box design: one runner runs all 8 cells back-to-back.
+          # Per-cell timeout (40m) lives in test/loop-cells.sh; per-job
+          # timeout (300m) is on this job. `su -` drops env, so PG_VERSION
+          # and PERF_* are re-exported inside; pipefail makes loop-cells.sh
+          # (not tee) drive the step exit code.
+          su - runner -c "bash -o pipefail -c 'cd $GITHUB_WORKSPACE && export PG_VERSION=${{ matrix.pg_version }} TEST_PG_VERSION=${{ matrix.pg_version }} PERF_SCALE=${PERF_SCALE:-100} PERF_REPS=${PERF_REPS:-3} && export PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:\$PATH && ./test/loop-cells.sh 2>&1 | tee /tmp/loop-seq-pg${{ matrix.pg_version }}.log'"
+
+      - name: Collect seq perf results
+        if: always()
+        run: |
+          OUT="/tmp/perf-results-seq-pg${{ matrix.pg_version }}.txt"
+          if ls /tmp/check-seq-pg${{ matrix.pg_version }}-*.log >/dev/null 2>&1; then
+            grep -h -E '^(PERF_RESULT|CPU_RESULT|LAT_RESULT|SYS_RESULT) ' /tmp/check-seq-pg${{ matrix.pg_version }}-*.log > "$OUT" || true
+          else
+            : > "$OUT"
+          fi
+          echo "--- seq perf results ($OUT) ---"
+          cat "$OUT" || true
+          if ! grep -q "^PERF_RESULT " "$OUT"; then
+            echo "ERROR: no PERF_RESULT lines (per-cell logs missing or all cells failed)" >&2
+            exit 1
+          fi
+
+      - name: Upload seq perf results
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: perf-results-seq-pg${{ matrix.pg_version }}
+          path: /tmp/perf-results-seq-pg${{ matrix.pg_version }}.txt
+          retention-days: 14
+
+      - name: Upload per-cell logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: logs-seq-pg${{ matrix.pg_version }}
+          path: /tmp/check-seq-pg${{ matrix.pg_version }}-*.log
+          retention-days: 14
+
+      - name: Upload baseline SHA
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: baseline-sha-seq-pg${{ matrix.pg_version }}
+          path: /tmp/baseline-sha.txt
+          retention-days: 14
+
+  perf-seq-summary:
+    needs: [perf-seq]
+    if: "!cancelled()"
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download seq perf result artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: perf-results-seq-*
+          merge-multiple: true
+          path: ./perf-results
+
+      - name: Download baseline SHA
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v5
+        with:
+          pattern: baseline-sha-seq-*
+          merge-multiple: true
+          path: ./perf-meta
+
+      - name: Render seq perf summary
+        if: always()
+        env:
+          PERF_REPS: ${{ vars.PERF_REPS || 3 }}
+        run: |
+          python3 test/perf-summary.py
+
+      - name: Upload seq perf dataset (JSON)
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: perf-results-seq-json
+          path: ./perf-results.json
+          retention-days: 90

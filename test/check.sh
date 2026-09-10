@@ -504,9 +504,17 @@ start_pgmoneta_server() {
    echo "=== kernel io_uring state ==="
    cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo "(no /proc/sys/kernel/io_uring_disabled; io_uring not restricted by sysctl)"
 
-   echo "Starting pgmoneta server in daemon mode"
-   $EXECUTABLE_DIRECTORY/pgmoneta -c $CONFIGURATION_DIRECTORY/pgmoneta.conf -u $CONFIGURATION_DIRECTORY/pgmoneta_users.conf -d
-   echo "Wait for pgmoneta to be ready"
+    echo "Starting pgmoneta server in daemon mode"
+    # Detach daemon stdio: `pgmoneta -d` forks without redirecting stdio
+    # (src/main.c only fork+setsid), so the daemon and its workers would
+    # otherwise inherit our stdout/stderr — in CI that is the `| tee` pipe,
+    # which they would hold open forever and the step would hang after the
+    # script exits (previously masked by `trap cleanup EXIT` shutting the
+    # server down). Server logging goes to $LOG_DIR/pgmoneta.log anyway.
+    $EXECUTABLE_DIRECTORY/pgmoneta -c $CONFIGURATION_DIRECTORY/pgmoneta.conf -u $CONFIGURATION_DIRECTORY/pgmoneta_users.conf -d >"$LOG_DIR/pgmoneta-daemon.out" 2>&1 </dev/null
+    echo "--- daemon spawn output (empty means clean fork) ---"
+    cat "$LOG_DIR/pgmoneta-daemon.out" 2>/dev/null || true
+    echo "Wait for pgmoneta to be ready"
 
    for i in 1 2 3 4 5; do
       echo "--- start attempt $i ---"
@@ -589,10 +597,12 @@ perf_wait_wal_quiescent() {
    return 1
 }
 
-# Number of backups for primary, parsed from list-backup JSON
+# Number of backups for primary, parsed from list-backup output
 # ({ "Response": { "NumberOfBackups": N, ... } }). Fails loud on parse errors.
+# Uses -F raw: the default/json output humanizes sizes/enums for display
+# (src/cli.c translate_json_object), while raw preserves machine values.
 perf_backup_count() {
-   $EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF list-backup primary -s asc -F json \
+   $EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF list-backup primary -s asc -F raw \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["Response"]["NumberOfBackups"])'
 }
 
@@ -624,8 +634,12 @@ perf_clear_backups() {
    fi
 }
 
-# Backup size in bytes: recursive BackupSize search in the info JSON, then in
-# the list-backup JSON, then du -sb of the newest backup dir as last resort.
+# Backup size in bytes: recursive BackupSize search in the info output, then in
+# the list-backup output, then du -sb of the newest backup dir as last resort.
+# Callers must pass -F raw output: -F json humanizes BackupSize to strings
+# like "136.30MB" (src/cli.c translate_backup_argument), which are unusable
+# for arithmetic. Raw preserves the integer byte count (same value the old
+# MCTF probe read via the typed management protocol).
 perf_backup_bytes() {
    local info_json="$1"
    local list_json="$2"
@@ -648,8 +662,10 @@ def find(o):
     return None
 print(find(json.load(sys.stdin)) or 0)
 ' 2>/dev/null) || bytes=0
-   if [[ -z "$bytes" || "$bytes" -eq 0 ]]; then
-      bytes=$(echo "$list_json" | python3 -c '
+    # Regex first: [[ "136.30MB" -eq 0 ]] is a syntax error, and || would
+    # still evaluate the arithmetic side. Non-numeric falls through to du.
+    if [[ ! "$bytes" =~ ^[0-9]+$ ]] || [[ "$bytes" -eq 0 ]]; then
+       bytes=$(echo "$list_json" | python3 -c '
 import json,sys
 def find(o):
     if isinstance(o, dict):
@@ -668,9 +684,9 @@ def find(o):
 doc = json.load(sys.stdin)["Response"]["Backups"]
 print(max((find(b) or 0 for b in doc), default=0))
 ' 2>/dev/null) || bytes=0
-   fi
-   if [[ -z "$bytes" || "$bytes" -eq 0 ]]; then
-      echo "JSON byte parse failed, falling back to du -sb"
+    fi
+    if [[ ! "$bytes" =~ ^[0-9]+$ ]] || [[ "$bytes" -eq 0 ]]; then
+       echo "JSON byte parse failed (bytes='$bytes'), falling back to du -sb"
       newest_dir=$(find "$BACKUP_DIRECTORY/primary" -mindepth 1 -maxdepth 1 ! -name wal -type d -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
       if [[ -n "$newest_dir" && -d "$newest_dir" ]]; then
          bytes=$(du -sb "$newest_dir" | cut -f1)
@@ -762,7 +778,7 @@ run_perf_shell() {
       fi
 
       echo "=== perf rep $r/$reps: list-backup ==="
-      list_json=$($EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF list-backup primary -s asc -F json) \
+      list_json=$($EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF list-backup primary -s asc -F raw) \
          || { echo "ERROR: list-backup failed on rep $r" >&2; exit 1; }
       echo "$list_json"
       count=$(echo "$list_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Response"]["NumberOfBackups"])') \
@@ -777,13 +793,13 @@ run_perf_shell() {
       fi
 
       echo "=== perf rep $r/$reps: info primary newest ==="
-      info_json=$($EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF info primary newest -F json) \
+      info_json=$($EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF info primary newest -F raw) \
          || { echo "ERROR: info failed on rep $r" >&2; exit 1; }
       echo "$info_json"
       bytes=$(perf_backup_bytes "$info_json" "$list_json")
       echo "rep $r backup bytes=$bytes"
-      if [[ -z "$bytes" || "$bytes" -eq 0 ]]; then
-         echo "ERROR: backup size anomaly on rep $r (bytes=$bytes)" >&2
+      if [[ ! "$bytes" =~ ^[0-9]+$ ]] || [[ "$bytes" -eq 0 ]]; then
+         echo "ERROR: backup size anomaly on rep $r (bytes='$bytes', want integer bytes; check -F raw output above)" >&2
          exit 1
       fi
 
@@ -819,9 +835,16 @@ run_perf() {
   else
     echo "Environment already ready, skipping build"
   fi
-  assert_perf_bin_compat
-  start_pgmoneta_server
-  run_perf_shell
+   assert_perf_bin_compat
+   start_pgmoneta_server
+   run_perf_shell
+   # Explicit shutdown so the CI step can finish promptly. This is NOT
+   # cleanup: all data/logs under /tmp/pgmoneta-test are left in place.
+   # (Needed even though daemon stdio is detached — a lingering server would
+   # otherwise keep WAL streaming and hold resources until job timeout.)
+   echo "=== shutting down pgmoneta (data/logs left in place, no cleanup) ==="
+   $EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF shutdown 2>/dev/null || true
+   sleep 5
 }
 
 SUBCOMMAND=""

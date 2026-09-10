@@ -251,11 +251,18 @@ start_postgresql() {
   export PG_REPL_USER_NAME=${PG_REPL_USER_NAME}
   export PG_REPL_PASSWORD=${PG_REPL_PASSWORD}
 
+  # Redirect setup stdio to a file (replayed below): `pg_ctl start` launches
+  # postmaster WITHOUT detaching its stdout/stderr, so without this postgres
+  # and all its children would inherit our stdout — in CI that is the `| tee`
+  # pipe — hold it open forever, and the step would hang after the script
+  # exits (same bug class as the pgmoneta daemon hold fixed at its spawn).
   if [ "$(id -u)" -eq 0 ]; then
-    runuser -m -u postgres -- /root/usr/bin/run-postgresql-local
+    runuser -m -u postgres -- /root/usr/bin/run-postgresql-local >"$LOG_DIR/postgres-setup.log" 2>&1 </dev/null
   else
-    sudo -E -u postgres /root/usr/bin/run-postgresql-local
+    sudo -E -u postgres /root/usr/bin/run-postgresql-local >"$LOG_DIR/postgres-setup.log" 2>&1 </dev/null
   fi
+  echo "--- postgres setup log ---"
+  cat "$LOG_DIR/postgres-setup.log"
   set -e
 }
 
@@ -844,6 +851,19 @@ run_perf() {
    # otherwise keep WAL streaming and hold resources until job timeout.)
    echo "=== shutting down pgmoneta (data/logs left in place, no cleanup) ==="
    $EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF shutdown
+   sleep 5
+   if [[ $MODE == "ci" ]]; then
+      # Stop local postgres too (process hygiene, NOT data cleanup — every
+      # file stays for the log-upload step). Guarantees no surviving daemon
+      # from setup holds the CI log pipe open.
+      echo "=== stopping PostgreSQL (data/logs left in place, no cleanup) ==="
+      if [ "$(id -u)" -eq 0 ]; then
+        runuser -m -u postgres -- /usr/pgsql-$PG_VERSION/bin/pg_ctl -D /pgdata stop -m fast >>"$LOG_DIR/postgres-setup.log" 2>&1 </dev/null || true
+      else
+        sudo -E -u postgres /usr/pgsql-$PG_VERSION/bin/pg_ctl -D /pgdata stop -m fast >>"$LOG_DIR/postgres-setup.log" 2>&1 </dev/null || true
+      fi
+      sleep 2
+   fi
 
 }
 

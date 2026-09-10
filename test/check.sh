@@ -568,6 +568,10 @@ start_pgmoneta_server() {
 # across consecutive 2s polls. A missing dir counts as "not yet" (the streamer
 # may not have created it right after server start), never as success.
 # Returns 0 on quiescence, 1 on timeout (fail loud at the call site).
+# Quiescence = entry count AND total size unchanged across 4 consecutive
+# 2s polls (~8s of stillness). Two polls proved too weak: minutes-long
+# background churn (e.g. autovacuum WAL) contains 4s lulls that false-pass,
+# then the next gate times out. 8s still passes in ~10s when truly quiet.
 perf_wait_wal_quiescent() {
    local waldir=$1
    local timeout_secs=$2
@@ -584,7 +588,7 @@ perf_wait_wal_quiescent() {
          size=$(du -sb "$waldir" 2>/dev/null | cut -f1) || size=-1
          if [[ "$count" -ge 0 && "$count" -eq "$last_count" && "$size" -eq "$last_size" ]]; then
             stable=$((stable + 1))
-            if [[ $stable -ge 2 ]]; then
+            if [[ $stable -ge 4 ]]; then
                echo "WAL streamer quiescent (entries=$count size=$size) ... ok"
                return 0
             fi
@@ -601,7 +605,15 @@ perf_wait_wal_quiescent() {
       sleep 2
       waited=$((waited + 2))
    done
+   # Forensics for the next failure: a frozen dir + silent log means a stalled
+   # streamer (product bug — extra suspicious on io_uring); arriving files
+   # mean background WAL churn (noise — extend windows, silence the source).
    echo "ERROR: WAL streamer never quiesced in $waldir (timeout ${timeout_secs}s) - infra failure, not speed" >&2
+   echo "--- WAL dir state at timeout ---" >&2
+   du -sh "$waldir" 2>/dev/null >&2 || true
+   find "$waldir" -mindepth 1 -printf '%T+ %s %p\n' 2>/dev/null | sort -r | head -5 >&2 || true
+   echo "--- server log tail at timeout ---" >&2
+   tail -n 30 "$LOG_DIR/pgmoneta.log" 2>/dev/null >&2 || echo "(no server log)" >&2
    return 1
 }
 
@@ -817,8 +829,11 @@ run_perf_shell() {
    # and capped backups at ~136MB. Distinct digests are incompressible in
    # practice, so backup size tracks the raw table (~160B/row). No extension
    # needed (gen_random_bytes would require pgcrypto in every fixture).
+   # autovacuum disabled on the seed table: after a 10M-row CTAS, autoanalyze/
+   # autovacuum would otherwise wake up mid-run and stream minutes of WAL
+   # noise, tripping the pre-rep quiesce gate. Same seed on both branches.
    psql -h localhost -p "$PORT" -U "$PG_USER_NAME" -d "$PG_DATABASE" -v ON_ERROR_STOP=1 -tA \
-      -c "DROP TABLE IF EXISTS perf_data; CREATE TABLE perf_data AS SELECT g, md5(g::text||'a')||md5(g::text||'b')||md5(g::text||'c')||md5(g::text||'d') FROM generate_series(1, $rows) g;"
+      -c "DROP TABLE IF EXISTS perf_data; CREATE TABLE perf_data AS SELECT g, md5(g::text||'a')||md5(g::text||'b')||md5(g::text||'c')||md5(g::text||'d') FROM generate_series(1, $rows) g; ALTER TABLE perf_data SET (autovacuum_enabled = false, toast.autovacuum_enabled = false);"
 
    echo "=== perf probe: pg_database_size ==="
    seed_bytes=$(psql -h localhost -p "$PORT" -U "$PG_USER_NAME" -d "$PG_DATABASE" -v ON_ERROR_STOP=1 -tA \
@@ -849,8 +864,8 @@ run_perf_shell() {
    perf_wait_wal_quiescent "$waldir" 600 || exit 1
 
    for r in $(seq 1 "$reps"); do
-      echo "=== perf rep $r/$reps: WAL quiesce (timeout 120s) ==="
-      perf_wait_wal_quiescent "$waldir" 120 || exit 1
+      echo "=== perf rep $r/$reps: WAL quiesce (timeout 300s) ==="
+      perf_wait_wal_quiescent "$waldir" 300 || exit 1
 
       echo "=== perf rep $r/$reps: clear prior backups ==="
       perf_clear_backups "$r"
@@ -911,7 +926,11 @@ run_perf_shell() {
 run_latency_probe() {
    local build_label=$1
    local flags=$2
-   local cli="$EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF -U $PG_REPL_USER_NAME -P $PG_REPL_PASSWORD"
+   # No -U/-P on purpose (same convention as the backup loop): over the unix
+   # socket the peer path needs no explicit creds, and passing -P trips an
+   # ASan bad-free in main-branch pgmoneta-cli (fixed only on io_layer),
+   # aborting the probe on baseline jobs after a successful ping.
+   local cli="$EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF"
    local tmpdir="$BASE_DIR/latency"
    local i w s e
 

@@ -1016,7 +1016,6 @@ static int
 ev_io_uring_io_start(struct io_watcher* watcher)
 {
    struct io_uring_sqe* sqe = io_uring_get_sqe(&loop->ring_rcv);
-   struct message* msg = NULL;
 
    if (unlikely(!sqe))
    {
@@ -1036,7 +1035,10 @@ ev_io_uring_io_start(struct io_watcher* watcher)
          sqe->buf_group = 0;
          sqe->flags |= IOSQE_BUFFER_SELECT;
 #else
-         msg = pgmoneta_get_watcher_message(watcher);
+         /* Declared here (not at function top): with multishot enabled this
+          * branch is compiled out, and an unused top-level declaration trips
+          * -Werror,-Wunused-variable on the flag builds. */
+         struct message* msg = pgmoneta_get_watcher_message(watcher);
          /* Use MESSAGE_PARSE_BUFFER_SIZE to leave headroom and prevent buffer
           * overflow when parsing message headers near the end of received data */
          io_uring_prep_recv(sqe, watcher->fds.worker.rcv_fd, msg->data, MESSAGE_PARSE_BUFFER_SIZE, 0);

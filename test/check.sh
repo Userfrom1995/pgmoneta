@@ -561,6 +561,7 @@ start_pgmoneta_server() {
    done
 
    assert_effective_backend
+   assert_perf_flags
 }
 
 # Wait until the WAL streamer is quiescent: entry count AND total size stable
@@ -702,21 +703,90 @@ print(max((find(b) or 0 for b in doc), default=0))
    echo "$bytes"
 }
 
+# Sum of utime+stime+cutime+cstime over all pgmoneta server processes.
+# Matches comm exactly ("pgmoneta"), so pgmoneta-cli is excluded. Including
+# child times keeps deltas immune to worker churn mid-backup. /proc is
+# root-readable in CI; missing pids (races) are skipped, never fatal here.
+perf_cpu_jiffies() {
+   local total=0 pid t
+   for pid in $(pgrep -x pgmoneta 2>/dev/null || true); do
+      if [[ -r "/proc/$pid/stat" ]]; then
+         t=$(awk '{sub(/^[0-9]+ \(.*\) /, ""); print $12+$13+$14+$15}' "/proc/$pid/stat" 2>/dev/null) || continue
+         [[ "$t" =~ ^[0-9]+$ ]] || continue
+         total=$((total + t))
+      fi
+   done
+   echo "$total"
+}
+
+# Assert experimental compile flags match PERF_FLAGS. io_layer logs
+# "Experimental features: ..." at debug (ev.c); the main/libev family has
+# no such marker and no flags, so the check is skipped there.
+assert_perf_flags() {
+   local key="${PERF_EV_KEY:-ev_backend}"
+   local flags="${PERF_FLAGS:-base}"
+   local want_multi=0 want_zc=0 marker
+
+   if [[ "$key" != "ev_backend" ]]; then
+      echo "Flag assert skipped (backend family '$key' has no experimental flags)"
+      return 0
+   fi
+   case "$flags" in
+      base) want_multi=0; want_zc=0 ;;
+      multishot) want_multi=1; want_zc=0 ;;
+      zerocopy) want_multi=0; want_zc=1 ;;
+      both) want_multi=1; want_zc=1 ;;
+      *) echo "ERROR: unknown PERF_FLAGS='$flags' (want base|multishot|zerocopy|both)" >&2; exit 1 ;;
+   esac
+   echo "Asserting experimental flags (PERF_FLAGS=$flags)"
+   if [[ ! -f "$LOG_DIR/pgmoneta.log" ]]; then
+      echo "ERROR: server log $LOG_DIR/pgmoneta.log not found; cannot verify flags" >&2
+      exit 1
+   fi
+   marker=$(grep -F "Experimental features:" "$LOG_DIR/pgmoneta.log" | tail -1)
+   if [[ -z "$marker" ]]; then
+      echo "ERROR: 'Experimental features:' marker not found in $LOG_DIR/pgmoneta.log" >&2
+      exit 1
+   fi
+   if ! echo "$marker" | grep -Eq "multishot=${want_multi}( |$)"; then
+      echo "ERROR: multishot flag mismatch (want $want_multi): $marker" >&2
+      exit 1
+   fi
+   if ! echo "$marker" | grep -Eq "zerocopy=${want_zc}( |$)"; then
+      echo "ERROR: zerocopy flag mismatch (want $want_zc): $marker" >&2
+      exit 1
+   fi
+   echo "Experimental flags verified: $(echo "$marker" | grep -o "Experimental features:.*")"
+}
+
 run_perf_shell() {
    local build_label="${PERF_BUILD_LABEL:-unknown}"
    local ev_key="${PERF_EV_KEY:-ev_backend}"
-   local scale_raw="${PERF_SCALE:-50}"
+   local flags="${PERF_FLAGS:-base}"
+   # SCALE=100 default: 10M rows x ~160B = ~1.6GB heap, ~0.8-1GB compressed
+   # backup. Peak disk (DB + 1 backup + WAL transient + build) stays well
+   # under the ~14GB free on GitHub runners; each rep deletes the previous
+   # backup first so disk is reused, never accumulated.
+   local scale_raw="${PERF_SCALE:-100}"
    local reps_raw="${PERF_REPS:-3}"
    local scale reps rows r
    local seed_bytes server_version waldir
    local start_ms end_ms ms list_json info_json count bytes mb mbs
+   local clk_tck cpu_start cpu_end cpu_s
+   local lat_n
 
    echo "=== perf env ==="
    echo "PERF_BUILD_LABEL=$build_label"
    echo "EVENT_BACKEND=$EVENT_BACKEND"
    echo "PG_VERSION=$PG_VERSION"
    echo "PERF_EV_KEY=$ev_key"
+   echo "PERF_FLAGS=$flags"
    echo "EXECUTABLE_DIRECTORY=$EXECUTABLE_DIRECTORY"
+   case "$flags" in
+      base|multishot|zerocopy|both) ;;
+      *) echo "ERROR: unknown PERF_FLAGS='$flags' (want base|multishot|zerocopy|both)" >&2; exit 1 ;;
+   esac
+   clk_tck=$(getconf CLK_TCK)
 
    case "$scale_raw" in
       ''|*[!0-9]*)
@@ -742,13 +812,25 @@ run_perf_shell() {
    rows=$((scale * 100000))
 
    echo "=== perf seed: DROP + CREATE perf_data ($rows rows) ==="
+   # Payload is 4 DISTINCT md5s per row (128 high-entropy hex chars). The old
+   # repeat(md5,4) stored the same 32-char block 4x, which zstd compressed ~5:1
+   # and capped backups at ~136MB. Distinct digests are incompressible in
+   # practice, so backup size tracks the raw table (~160B/row). No extension
+   # needed (gen_random_bytes would require pgcrypto in every fixture).
    psql -h localhost -p "$PORT" -U "$PG_USER_NAME" -d "$PG_DATABASE" -v ON_ERROR_STOP=1 -tA \
-      -c "DROP TABLE IF EXISTS perf_data; CREATE TABLE perf_data AS SELECT g, repeat(md5(g::text),4) FROM generate_series(1, $rows) g;"
+      -c "DROP TABLE IF EXISTS perf_data; CREATE TABLE perf_data AS SELECT g, md5(g::text||'a')||md5(g::text||'b')||md5(g::text||'c')||md5(g::text||'d') FROM generate_series(1, $rows) g;"
 
    echo "=== perf probe: pg_database_size ==="
    seed_bytes=$(psql -h localhost -p "$PORT" -U "$PG_USER_NAME" -d "$PG_DATABASE" -v ON_ERROR_STOP=1 -tA \
       -c "SELECT pg_database_size('mydb');") || { echo "ERROR: pg_database_size probe failed" >&2; exit 1; }
    echo "seed bytes=$seed_bytes"
+   # Seed gate: raw rows are ~160B each; require >= 50B/row so a silently
+   # truncated seed (wrong scale, failed CTAS) fails loud instead of
+   # benchmarking a toy dataset.
+   if [[ ! "$seed_bytes" =~ ^[0-9]+$ ]] || [[ "$seed_bytes" -lt $((rows * 50)) ]]; then
+      echo "ERROR: seed dataset too small (bytes='$seed_bytes', need >= $((rows * 50)) for scale $scale)" >&2
+      exit 1
+   fi
 
    echo "=== perf probe: server_version_num ==="
    server_version=$(psql -h localhost -p "$PORT" -U "$PG_USER_NAME" -d "$PG_DATABASE" -v ON_ERROR_STOP=1 -tA \
@@ -763,20 +845,22 @@ run_perf_shell() {
    fi
 
    waldir="$BACKUP_DIRECTORY/primary/wal"
-   echo "=== perf WAL quiesce after seed (timeout 300s) ==="
-   perf_wait_wal_quiescent "$waldir" 300 || exit 1
+   echo "=== perf WAL quiesce after seed (timeout 600s) ==="
+   perf_wait_wal_quiescent "$waldir" 600 || exit 1
 
    for r in $(seq 1 "$reps"); do
-      echo "=== perf rep $r/$reps: WAL quiesce (timeout 60s) ==="
-      perf_wait_wal_quiescent "$waldir" 60 || exit 1
+      echo "=== perf rep $r/$reps: WAL quiesce (timeout 120s) ==="
+      perf_wait_wal_quiescent "$waldir" 120 || exit 1
 
       echo "=== perf rep $r/$reps: clear prior backups ==="
       perf_clear_backups "$r"
 
       echo "=== perf rep $r/$reps: backup primary ==="
+      cpu_start=$(perf_cpu_jiffies)
       start_ms=$(date +%s%3N)
       $EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF backup primary
       end_ms=$(date +%s%3N)
+      cpu_end=$(perf_cpu_jiffies)
       ms=$((end_ms - start_ms))
       echo "rep $r backup ms=$ms"
       if [[ "$ms" -le 0 ]]; then
@@ -810,11 +894,79 @@ run_perf_shell() {
          exit 1
       fi
 
-      echo "PERF_RESULT build=$build_label backend=$EVENT_BACKEND pg=$PG_VERSION rep=$r ms=$ms bytes=$bytes"
+      cpu_s=$(awk "BEGIN {d=$cpu_end-$cpu_start; if (d<0) d=0; printf \"%.2f\", d/$clk_tck}")
+      echo "PERF_RESULT build=$build_label backend=$EVENT_BACKEND pg=$PG_VERSION flags=$flags rep=$r ms=$ms bytes=$bytes"
+      echo "CPU_RESULT build=$build_label backend=$EVENT_BACKEND pg=$PG_VERSION flags=$flags rep=$r cpu_s=$cpu_s"
       mb=$(awk "BEGIN {printf \"%.1f\", $bytes/1048576.0}")
       mbs=$(awk "BEGIN {printf \"%.1f\", ($bytes/1048576.0)/($ms/1000.0)}")
-      echo "PERF_HUMAN rep $r: $ms ms, $mb MB ($mbs MB/s)"
+      echo "PERF_HUMAN rep $r: $ms ms, $mb MB ($mbs MB/s, ${cpu_s}s CPU)"
    done
+
+   run_latency_probe "$build_label" "$flags"
+}
+
+# Management-plane latency probe: sequential pings (baseline) plus a
+# concurrent burst (fan-out). Timed per call, aggregated to p50/p99/max.
+# Emits LAT_RESULT lines for the perf summary + JSON export. ~1-2 min.
+run_latency_probe() {
+   local build_label=$1
+   local flags=$2
+   local cli="$EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF -U $PG_REPL_USER_NAME -P $PG_REPL_PASSWORD"
+   local tmpdir="$BASE_DIR/latency"
+   local i w s e
+
+   rm -rf "$tmpdir"
+   mkdir -p "$tmpdir"
+
+   echo "=== latency probe: 500x sequential ping ==="
+   : > "$tmpdir/seq.txt"
+   for i in $(seq 1 500); do
+      s=$(date +%s%N)
+      $cli ping >/dev/null 2>&1 || { echo "ERROR: ping failed during latency probe (seq $i)" >&2; exit 1; }
+      e=$(date +%s%N)
+      awk "BEGIN {printf \"%.3f\n\", ($e - $s)/1000000}" >> "$tmpdir/seq.txt"
+   done
+
+   echo "=== latency probe: 16x25 concurrent ping burst ==="
+   for w in $(seq 1 16); do
+      (
+         for i in $(seq 1 25); do
+            s=$(date +%s%N)
+            $cli ping >/dev/null 2>&1 || exit 1
+            e=$(date +%s%N)
+            awk "BEGIN {printf \"%.3f\n\", ($e - $s)/1000000}"
+         done > "$tmpdir/burst-$w.txt"
+      ) &
+   done
+   wait || { echo "ERROR: a burst worker failed during latency probe" >&2; exit 1; }
+   for w in $(seq 1 16); do
+      if [[ ! -s "$tmpdir/burst-$w.txt" ]]; then
+         echo "ERROR: burst worker $w produced no samples" >&2
+         exit 1
+      fi
+   done
+   cat "$tmpdir"/burst-*.txt > "$tmpdir/burst.txt"
+
+   echo "=== latency probe: aggregate ==="
+   # Unquoted heredoc: $build_label/$EVENT_BACKEND/$PG_VERSION/$flags expand;
+   # the python body contains no other $ or backticks, so it passes through.
+   python3 - "$tmpdir/seq.txt" "$tmpdir/burst.txt" <<PYEOF || { echo "ERROR: latency aggregation failed" >&2; exit 1; }
+import statistics, sys
+
+def summary(path):
+    vals = sorted(float(l) for l in open(path) if l.strip())
+    n = len(vals)
+    if n == 0:
+        raise SystemExit("no samples in %s" % path)
+    qs = statistics.quantiles(vals, n=100, method="exclusive")
+    return n, vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2, qs[98], vals[-1]
+
+for mode, path in (("sequential", sys.argv[1]), ("burst", sys.argv[2])):
+    n, p50, p99, mx = summary(path)
+    print("LAT_RESULT build=%s backend=%s pg=%s flags=%s mode=%s n=%d p50_ms=%.3f p99_ms=%.3f max_ms=%.3f"
+          % ("$build_label", "$EVENT_BACKEND", "$PG_VERSION", "$flags", mode, n, p50, p99, mx))
+PYEOF
+   rm -rf "$tmpdir"
 }
 
 usage() {

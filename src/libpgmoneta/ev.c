@@ -270,7 +270,14 @@ log_backend:
    {
       loop->backend = backend_type;
    }
-   // Log backend selection
+   // Log backend selection plus experimental compile flags, so CI can assert
+   // a flag-labeled job really ran with those flags (not a silent fallback).
+   pgmoneta_log_debug("Experimental features: zerocopy=%d fast_poll=%d use_huge=%d multishot=%d iovecs=%d",
+                      EXPERIMENTAL_FEATURE_ZERO_COPY_ENABLED,
+                      EXPERIMENTAL_FEATURE_FAST_POLL_ENABLED,
+                      EXPERIMENTAL_FEATURE_USE_HUGE_ENABLED,
+                      EXPERIMENTAL_FEATURE_RECV_MULTISHOT_ENABLED,
+                      EXPERIMENTAL_FEATURE_IOVECS);
    if (original_backend == PGMONETA_EVENT_BACKEND_IO_URING && backend_type == PGMONETA_EVENT_BACKEND_EPOLL)
    {
       pgmoneta_log_warn("Event backend: epoll (fallback from io_uring)");

@@ -142,14 +142,15 @@ jobs:
       - name: Run Tests
         timeout-minutes: 120
         run: |
-          # Defaults: PERF_SCALE=50 PERF_REPS=3 (validated/clamped in test/testcases/test_perf.c);
+          # Defaults: PERF_SCALE=100 PERF_REPS=3 (validated/clamped in test/check.sh);
+          # SCALE=100 = 10M rows, ~1.6GB heap, ~0.8-1GB compressed backup.
           # PERF_BUILD_LABEL/PERF_EV_KEY identify the tree under test; TEST_EVENT_BACKEND and
           # TEST_PG_VERSION come from the matrix. `su -` starts a login shell that drops the
           # outer environment, so the full PERF_*/TEST_* set is re-exported inside.
           # bash -o pipefail -c makes check.sh failures (not tee) drive the step exit code.
           # Only clang-Debug combos run the suite (the perf-gated Collect below matches this condition).
           if [ "${{ matrix.compiler }}" = "clang" ] && [ "${{ matrix.build_type }}" = "Debug" ]; then
-            su - runner -c "bash -o pipefail -c 'cd $GITHUB_WORKSPACE && export TEST_PG_VERSION=${{ matrix.pg_version }} TEST_EVENT_BACKEND=${{ matrix.event_backend }} PERF_SCALE=${PERF_SCALE:-50} PERF_REPS=${PERF_REPS:-3} PERF_BUILD_LABEL=io_layer PERF_EV_KEY=ev_backend && export PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:\$PATH && ./test/check.sh ci 2>&1 | tee /tmp/check-io_layer-${{ matrix.pg_version }}-${{ matrix.event_backend }}.log'"
+            su - runner -c "bash -o pipefail -c 'cd $GITHUB_WORKSPACE && export TEST_PG_VERSION=${{ matrix.pg_version }} TEST_EVENT_BACKEND=${{ matrix.event_backend }} PERF_SCALE=${PERF_SCALE:-100} PERF_REPS=${PERF_REPS:-3} PERF_BUILD_LABEL=io_layer PERF_EV_KEY=ev_backend && export PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:\$PATH && ./test/check.sh ci 2>&1 | tee /tmp/check-io_layer-${{ matrix.pg_version }}-${{ matrix.event_backend }}.log'"
           fi
 
       - name: Collect perf results
@@ -158,7 +159,7 @@ jobs:
           LOG="/tmp/check-io_layer-${{ matrix.pg_version }}-${{ matrix.event_backend }}.log"
           OUT="/tmp/perf-results-io_layer-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.pg_version }}-${{ matrix.event_backend }}.txt"
           if [ -f "$LOG" ]; then
-            grep -h "^PERF_RESULT " "$LOG" > "$OUT" || true
+            grep -h -E "^(PERF_RESULT|CPU_RESULT|LAT_RESULT) " "$LOG" > "$OUT" || true
           else
             : > "$OUT"
           fi
@@ -290,12 +291,13 @@ jobs:
       - name: Run Tests (main binaries via this branch harness)
         timeout-minutes: 120
         run: |
-          # Defaults: PERF_SCALE=50 PERF_REPS=3 (validated/clamped in test/testcases/test_perf.c).
+          # Defaults: PERF_SCALE=100 PERF_REPS=3 (validated/clamped in test/check.sh).
+          # SCALE=100 = 10M rows, ~1.6GB heap, ~0.8-1GB compressed backup.
           # `su -` drops the outer environment, so the full PERF_*/TEST_* set is
           # re-exported inside; bash -o pipefail -c makes check.sh (not tee) drive the exit code.
           # Compat gate for mixed trees is check.sh's `pgmoneta -V` comparison
           # (finding #14) — no separate job (finding #31).
-          su - runner -c "bash -o pipefail -c 'cd $GITHUB_WORKSPACE && export TEST_PG_VERSION=${{ matrix.pg_version }} TEST_EVENT_BACKEND=${{ matrix.event_backend }} PERF_SCALE=${PERF_SCALE:-50} PERF_REPS=${PERF_REPS:-3} PERF_BUILD_LABEL=main PERF_EV_KEY=libev PERF_BIN_DIR=/tmp/pgmoneta-main/build/src && export PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:\$PATH && ./test/check.sh ci 2>&1 | tee /tmp/check-main-${{ matrix.pg_version }}-${{ matrix.event_backend }}.log'"
+          su - runner -c "bash -o pipefail -c 'cd $GITHUB_WORKSPACE && export TEST_PG_VERSION=${{ matrix.pg_version }} TEST_EVENT_BACKEND=${{ matrix.event_backend }} PERF_SCALE=${PERF_SCALE:-100} PERF_REPS=${PERF_REPS:-3} PERF_BUILD_LABEL=main PERF_EV_KEY=libev PERF_BIN_DIR=/tmp/pgmoneta-main/build/src && export PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:\$PATH && ./test/check.sh ci 2>&1 | tee /tmp/check-main-${{ matrix.pg_version }}-${{ matrix.event_backend }}.log'"
 
       - name: Collect perf results
         if: always()
@@ -303,7 +305,7 @@ jobs:
           LOG="/tmp/check-main-${{ matrix.pg_version }}-${{ matrix.event_backend }}.log"
           OUT="/tmp/perf-results-main-clang-Debug-${{ matrix.pg_version }}-${{ matrix.event_backend }}.txt"
           if [ -f "$LOG" ]; then
-            grep -h "^PERF_RESULT " "$LOG" > "$OUT" || true
+            grep -h -E "^(PERF_RESULT|CPU_RESULT|LAT_RESULT) " "$LOG" > "$OUT" || true
           else
             : > "$OUT"
           fi
@@ -338,6 +340,137 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: logs-main-clang-Debug-pg${{ matrix.pg_version }}-${{ matrix.event_backend }}
+          path: /tmp/pgmoneta-test/log
+          retention-days: 90
+
+  perf-flags:
+    # Experimental io_uring flag matrix (io_layer tree only): pg versions x
+    # {multishot, zerocopy, both}. Base coverage comes from the build-linux
+    # io_uring cells; epoll cells are omitted (flag paths are io_uring-only
+    # and inert on epoll); main has no ev.c flags. Fixed clang-Debug, since
+    # only that combo runs the perf harness. Flag jobs may crash (these paths
+    # are experimental): no continue-on-error here so failures stay visible,
+    # but perf-summary still renders everything else (needs: !cancelled()).
+    needs: [format-check]
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux/rockylinux:10
+      options: --security-opt seccomp=unconfined
+
+    strategy:
+      matrix:
+        pg_version: [14, 15, 17]
+        flags: [multishot, zerocopy, both]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Dependencies
+        run: |
+          dnf -y install dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf -y install epel-release
+          dnf -y install \
+            git gcc clang clang-tools-extra cmake make \
+            liburing-devel openssl openssl-devel \
+            systemd systemd-devel zlib zlib-devel \
+            libzstd libzstd-devel lz4 lz4-devel \
+            libssh libssh-devel libatomic \
+            python3-docutils bzip2 bzip2-devel \
+            libarchive libarchive-devel libyaml-devel \
+            check check-devel \
+            libasan libubsan \
+            net-tools procps-ng ncurses-devel \
+            util-linux sudo which zstd
+
+      - name: Mark workspace as safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install PostgreSQL v${{ matrix.pg_version }}
+        run: |
+          dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-10-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+          dnf -qy module disable postgresql 2>/dev/null || true
+          dnf install -y postgresql${{ matrix.pg_version }} postgresql${{ matrix.pg_version }}-server postgresql${{ matrix.pg_version }}-contrib postgresql${{ matrix.pg_version }}-libs postgresql${{ matrix.pg_version }}-devel
+
+      - name: Set Env Path Variable
+        run: |
+          echo "PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:$PATH" >> $GITHUB_ENV
+          echo $PATH
+
+      - name: Install pgmoneta_ext
+        run: |
+          git_repo="https://github.com/pgmoneta/pgmoneta_ext.git"
+          cd /tmp/
+          git clone --branch "main" --single-branch --depth 1 "$git_repo"
+          cd /tmp/pgmoneta_ext/
+          mkdir build
+          cd /tmp/pgmoneta_ext/build/
+          cmake -DDOCS=false ..
+          make
+          make install
+
+      - name: Build Project with experimental flags
+        run: |
+          mkdir build
+          cd build
+          export CC=/usr/bin/clang
+          EXTRA_FLAGS=""
+          case "${{ matrix.flags }}" in
+            multishot) EXTRA_FLAGS="-DEXPERIMENTAL_FEATURE_RECV_MULTISHOT_ENABLED=1" ;;
+            zerocopy) EXTRA_FLAGS="-DEXPERIMENTAL_FEATURE_ZERO_COPY_ENABLED=1" ;;
+            both) EXTRA_FLAGS="-DEXPERIMENTAL_FEATURE_RECV_MULTISHOT_ENABLED=1 -DEXPERIMENTAL_FEATURE_ZERO_COPY_ENABLED=1" ;;
+          esac
+          echo "Experimental CFLAGS: $EXTRA_FLAGS"
+          cmake -DCMAKE_BUILD_TYPE=Debug -DDOCS=FALSE -DCMAKE_C_FLAGS="$EXTRA_FLAGS" ..
+          make -j$(nproc)
+
+      - name: Create test user
+        run: |
+          useradd -m -s /bin/bash runner
+          echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+          chown -R runner:runner $GITHUB_WORKSPACE
+
+      - name: Run Tests
+        timeout-minutes: 120
+        run: |
+          # Defaults: PERF_SCALE=100 PERF_REPS=3 (validated/clamped in test/check.sh).
+          # PERF_FLAGS labels the experimental ev.c flags built above; check.sh
+          # asserts the server log marker matches (no silent fallback).
+          su - runner -c "bash -o pipefail -c 'cd $GITHUB_WORKSPACE && export TEST_PG_VERSION=${{ matrix.pg_version }} TEST_EVENT_BACKEND=io_uring PERF_SCALE=${PERF_SCALE:-100} PERF_REPS=${PERF_REPS:-3} PERF_BUILD_LABEL=io_layer PERF_EV_KEY=ev_backend PERF_FLAGS=${{ matrix.flags }} && export PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:\$PATH && ./test/check.sh ci 2>&1 | tee /tmp/check-flags-${{ matrix.pg_version }}-${{ matrix.flags }}.log'"
+
+      - name: Collect perf results
+        if: always()
+        run: |
+          LOG="/tmp/check-flags-${{ matrix.pg_version }}-${{ matrix.flags }}.log"
+          OUT="/tmp/perf-results-flags-pg${{ matrix.pg_version }}-${{ matrix.flags }}.txt"
+          if [ -f "$LOG" ]; then
+            grep -h -E "^(PERF_RESULT|CPU_RESULT|LAT_RESULT) " "$LOG" > "$OUT" || true
+          else
+            : > "$OUT"
+          fi
+          echo "--- perf results ($OUT) ---"
+          cat "$OUT" || true
+          # A flag combo that emitted nothing likely crashed (experimental);
+          # keep the failure visible instead of uploading an empty file green.
+          if ! grep -q "^PERF_RESULT " "$OUT"; then
+            echo "ERROR: no PERF_RESULT lines (log $LOG missing, probe emitted nothing, or flag build crashed)" >&2
+            exit 1
+          fi
+
+      - name: Upload perf results
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: perf-results-flags-pg${{ matrix.pg_version }}-${{ matrix.flags }}
+          path: /tmp/perf-results-flags-pg${{ matrix.pg_version }}-${{ matrix.flags }}.txt
+          retention-days: 14
+
+      - name: Upload Run Log as Artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: logs-flags-clang-Debug-pg${{ matrix.pg_version }}-${{ matrix.flags }}
           path: /tmp/pgmoneta-test/log
           retention-days: 90
 
@@ -506,7 +639,7 @@ jobs:
 
   perf-summary:
     # needs lists whole jobs: per-matrix-combo needs cannot be selected in GitHub Actions (finding #23).
-    needs: [build-linux, test-main-baseline]
+    needs: [build-linux, test-main-baseline, perf-flags]
     if: "!cancelled()"
     runs-on: ubuntu-latest
 
@@ -530,7 +663,7 @@ jobs:
       - name: Jobs status preamble
         if: always()
         run: |
-          echo "Producer status: build-linux=${{ needs.build-linux.result }} test-main-baseline=${{ needs.test-main-baseline.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "Producer status: build-linux=${{ needs.build-linux.result }} test-main-baseline=${{ needs.test-main-baseline.result }} perf-flags=${{ needs.perf-flags.result }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Render perf summary
         if: always()
@@ -539,12 +672,15 @@ jobs:
         run: |
           python3 - <<'EOF'
           import glob
+          import json
           import os
           import re
           import statistics
           import sys
 
-          line_re = re.compile(r'^PERF_RESULT\s+(.*)$')
+          perf_re = re.compile(r'^PERF_RESULT\s+(.*)$')
+          cpu_re = re.compile(r'^CPU_RESULT\s+(.*)$')
+          lat_re = re.compile(r'^LAT_RESULT\s+(.*)$')
           kv_re = re.compile(r'(\w+)=(\S+)')
           try:
               expected_reps = int(os.environ.get('PERF_REPS', '3'))
@@ -560,6 +696,8 @@ jobs:
           dropped = 0
           malformed = 0
           groups = {}
+          cpu_by_rep = {}
+          latencies = {}
           files = sorted(glob.glob('perf-results/*.txt'))
           for path in files:
               with open(path) as f:
@@ -567,21 +705,43 @@ jobs:
                       s = raw.strip()
                       if not s:
                           continue
-                      m = line_re.match(s)
-                      if not m:
-                          dropped += 1
+                      m = perf_re.match(s)
+                      if m:
+                          kvs = dict(kv_re.findall(m.group(1)))
+                          try:
+                              key = (kvs['build'], kvs['backend'], kvs['pg'], kvs.get('flags', 'base'))
+                              rep = int(kvs['rep'])
+                              ms = int(kvs['ms'])
+                              nbytes = int(kvs['bytes'])
+                          except (KeyError, ValueError):
+                              malformed += 1
+                              continue
+                          groups.setdefault(key, []).append((rep, ms, nbytes))
                           continue
-                      kvs = dict(kv_re.findall(m.group(1)))
-                      try:
-                          build = kvs['build']
-                          backend = kvs['backend']
-                          pg = kvs['pg']
-                          ms = int(kvs['ms'])
-                          nbytes = int(kvs['bytes'])
-                      except (KeyError, ValueError):
-                          malformed += 1
+                      m = cpu_re.match(s)
+                      if m:
+                          kvs = dict(kv_re.findall(m.group(1)))
+                          try:
+                              key = (kvs['build'], kvs['backend'], kvs['pg'], kvs.get('flags', 'base'), int(kvs['rep']))
+                              cpu_by_rep[key] = float(kvs['cpu_s'])
+                          except (KeyError, ValueError):
+                              malformed += 1
                           continue
-                      groups.setdefault((build, backend, pg), []).append((ms, nbytes))
+                      m = lat_re.match(s)
+                      if m:
+                          kvs = dict(kv_re.findall(m.group(1)))
+                          try:
+                              key = (kvs['build'], kvs['backend'], kvs['pg'], kvs.get('flags', 'base'), kvs['mode'])
+                              latencies[key] = {
+                                  'n': int(kvs['n']),
+                                  'p50_ms': float(kvs['p50_ms']),
+                                  'p99_ms': float(kvs['p99_ms']),
+                                  'max_ms': float(kvs['max_ms']),
+                              }
+                          except (KeyError, ValueError):
+                              malformed += 1
+                          continue
+                      dropped += 1
 
           def mbps(ms, nbytes):
               if ms <= 0:
@@ -589,37 +749,85 @@ jobs:
               return (nbytes / 1048576.0) / (ms / 1000.0)
 
           rows = []
-          for key in sorted(groups, key=lambda k: (k[2], k[0], k[1])):
-              vals = [v for v in (mbps(ms, b) for ms, b in groups[key]) if v is not None]
+          for key in sorted(groups, key=lambda k: (k[2], k[3], k[0], k[1])):
+              build, backend, pg, flags = key
+              vals = [v for v in (mbps(ms, b) for _, ms, b in groups[key]) if v is not None]
               if not vals:
                   continue
-              rows.append((key[0], key[1], key[2], len(vals), statistics.median(vals)))
+              cpus = [cpu_by_rep.get((build, backend, pg, flags, rep)) for rep, _, _ in groups[key]]
+              cpus = [c for c in cpus if c is not None]
+              med_cpu = statistics.median(cpus) if cpus else None
+              rows.append((build, backend, pg, flags, len(vals), statistics.median(vals), med_cpu))
 
-          baselines = {pg: med for (build, backend, pg, n, med) in rows if build == 'main' and backend == 'epoll'}
+          baselines = {pg: med for (build, backend, pg, flags, n, med, _) in rows
+                       if build == 'main' and backend == 'epoll' and flags == 'base'}
 
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
               out.write('## Perf summary (backup throughput)\n\n')
-              out.write('Baseline `main` pinned to main HEAD: `{}`\n\n'.format(base_sha))
-              out.write('Parsed {} file(s): {} dropped line(s), {} malformed PERF_RESULT line(s).\n\n'.format(len(files), dropped, malformed))
+              out.write('Baseline `main`/epoll/base pinned to main HEAD: `{}`\n\n'.format(base_sha))
+              out.write('Parsed {} file(s): {} dropped line(s), {} malformed result line(s).\n\n'.format(len(files), dropped, malformed))
               if not rows:
                   out.write('ERROR: No PERF_RESULT lines found in perf-results artifacts ')
                   out.write('(files seen: {}; dropped: {}; malformed: {}). '.format(len(files), dropped, malformed))
                   out.write('Producer jobs may have failed/skipped before emitting perf — see the preamble above.\n')
                   sys.exit(1)
-              out.write('| Source | Backend | PG | Reps | Median MB/s | Delta vs main/epoll |\n')
-              out.write('|---|---|---|---|---|---|\n')
-              for (build, backend, pg, n, med) in rows:
-                  cells = [build, backend, pg, str(n), '{:.1f}'.format(med)]
+              out.write('| Source | Backend | PG | Flags | Reps | Median MB/s | Delta vs main/epoll/base |\n')
+              out.write('|---|---|---|---|---|---|---|\n')
+              for (build, backend, pg, flags, n, med, _) in rows:
+                  cells = [build, backend, pg, flags, str(n), '{:.1f}'.format(med)]
                   if n < expected_reps:
                       cells.append('WARNING: partial perf data ({}/{})'.format(n, expected_reps))
                   else:
                       base = baselines.get(pg)
                       if base is None or base <= 0:
-                          cells.append('MISSING main/epoll baseline for pg {}'.format(pg))
-                      elif build == 'main' and backend == 'epoll':
+                          cells.append('MISSING main/epoll/base baseline for pg {}'.format(pg))
+                      elif build == 'main' and backend == 'epoll' and flags == 'base':
                           cells.append('baseline')
                       else:
                           cells.append('{:+.1f}%'.format((med - base) / base * 100.0))
                   out.write('| {} |\n'.format(' | '.join(cells)))
               out.write('\nNote: `main` uses the libev backend spelling `iouring` (no underscore); `io_layer` uses `io_uring`.\n')
+              out.write('\n## Efficiency (CPU + management latency)\n\n')
+              out.write('| Source | Backend | PG | Flags | Median CPU s/rep | MB per CPU-s | ping p50/p99 seq (ms) | ping p50/p99 burst (ms) |\n')
+              out.write('|---|---|---|---|---|---|---|---|\n')
+              for (build, backend, pg, flags, n, med, med_cpu) in rows:
+                  med_mb = statistics.median([by for _, _, by in groups[(build, backend, pg, flags)]]) / 1048576.0
+                  if med_cpu is None or med_cpu <= 0:
+                      cpu_s, eff = 'n/a', 'n/a'
+                  else:
+                      cpu_s, eff = '{:.2f}'.format(med_cpu), '{:.1f}'.format(med_mb / med_cpu)
+                  seq = latencies.get((build, backend, pg, flags, 'sequential'))
+                  bst = latencies.get((build, backend, pg, flags, 'burst'))
+                  seq_s = '{:.2f}/{:.2f}'.format(seq['p50_ms'], seq['p99_ms']) if seq else 'n/a'
+                  bst_s = '{:.2f}/{:.2f}'.format(bst['p50_ms'], bst['p99_ms']) if bst else 'n/a'
+                  out.write('| {} |\n'.format(' | '.join([build, backend, pg, flags, cpu_s, eff, seq_s, bst_s])))
+              out.write('\nFull machine-readable dataset: `perf-results.json` artifact below.\n')
+
+          dataset = {
+              'meta': {'baseline_sha': base_sha, 'files': len(files),
+                       'dropped': dropped, 'malformed': malformed},
+              'throughput': [
+                  {'build': b, 'backend': be, 'pg': pg, 'flags': fl, 'reps': n,
+                   'median_mbs': med,
+                   'samples': [{'rep': r, 'ms': ms, 'bytes': by,
+                                'cpu_s': cpu_by_rep.get((b, be, pg, fl, r))}
+                               for r, ms, by in sorted(groups[(b, be, pg, fl)])]}
+                  for (b, be, pg, fl, n, med, _) in rows
+              ],
+              'latency': [
+                  {'build': b, 'backend': be, 'pg': pg, 'flags': fl, 'mode': m, **v}
+                  for (b, be, pg, fl, m), v in sorted(latencies.items())
+              ],
+          }
+          with open('perf-results.json', 'w') as f:
+              json.dump(dataset, f, indent=2)
+          print('Wrote perf-results.json: {} throughput groups, {} latency entries'.format(len(rows), len(latencies)))
           EOF
+
+      - name: Upload perf dataset (JSON)
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: perf-results-json
+          path: ./perf-results.json
+          retention-days: 90

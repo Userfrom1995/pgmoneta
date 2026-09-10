@@ -57,12 +57,24 @@ extern "C" {
 #include <sys/epoll.h>
 #endif /* HAVE_LINUX */
 
-/* Experimental features - all disabled for initial port */
+/* Experimental features - all disabled for initial port.
+ * Each is guarded so CI perf jobs can enable them per-build via
+ * -DEXPERIMENTAL_FEATURE_X_ENABLED=1 without editing this header. */
+#ifndef EXPERIMENTAL_FEATURE_ZERO_COPY_ENABLED
 #define EXPERIMENTAL_FEATURE_ZERO_COPY_ENABLED      0
+#endif
+#ifndef EXPERIMENTAL_FEATURE_FAST_POLL_ENABLED
 #define EXPERIMENTAL_FEATURE_FAST_POLL_ENABLED      0
+#endif
+#ifndef EXPERIMENTAL_FEATURE_USE_HUGE_ENABLED
 #define EXPERIMENTAL_FEATURE_USE_HUGE_ENABLED       0
+#endif
+#ifndef EXPERIMENTAL_FEATURE_RECV_MULTISHOT_ENABLED
 #define EXPERIMENTAL_FEATURE_RECV_MULTISHOT_ENABLED 0
+#endif
+#ifndef EXPERIMENTAL_FEATURE_IOVECS
 #define EXPERIMENTAL_FEATURE_IOVECS                 0
+#endif
 
 /* Context types - simplified for pgmoneta (no vault) */
 #define PGMONETA_CONTEXT_MAIN 0

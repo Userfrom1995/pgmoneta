@@ -272,6 +272,11 @@ jobs:
 
       - name: Build main-branch baseline
         run: |
+          # Pin to the workspace dir: git discovery must not depend on the
+          # step's inherited cwd (cwd outside the repo fails with
+          # "not a git repository ... stopping at filesystem boundary").
+          cd "$GITHUB_WORKSPACE"
+          test -d .git || { echo "FATAL: no git repo at $GITHUB_WORKSPACE"; ls -la "$GITHUB_WORKSPACE"; exit 1; }
           # The checkout is shallow; unshallow so merge-base resolves the true fork point.
           git fetch origin main --unshallow 2>/dev/null || git fetch origin main
           BASE_SHA=$(git merge-base HEAD origin/main)

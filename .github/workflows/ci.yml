@@ -142,11 +142,42 @@ jobs:
       - name: Run Tests
         timeout-minutes: 45
         run: |
-          export TEST_PG_VERSION=${{ matrix.pg_version }}
-          export TEST_EVENT_BACKEND=${{ matrix.event_backend }}
+          # Defaults: PERF_SCALE=50 PERF_REPS=3 (validated/clamped in test/testcases/test_perf.c);
+          # PERF_BUILD_LABEL/PERF_EV_KEY identify the tree under test; TEST_EVENT_BACKEND and
+          # TEST_PG_VERSION come from the matrix. `su -` starts a login shell that drops the
+          # outer environment, so the full PERF_*/TEST_* set is re-exported inside.
+          # bash -o pipefail -c makes check.sh failures (not tee) drive the step exit code.
+          # Only clang-Debug combos run the suite (the perf-gated Collect below matches this condition).
           if [ "${{ matrix.compiler }}" = "clang" ] && [ "${{ matrix.build_type }}" = "Debug" ]; then
-            su - runner -c "cd $GITHUB_WORKSPACE && export TEST_PG_VERSION=${{ matrix.pg_version }} && export TEST_EVENT_BACKEND=${{ matrix.event_backend }} && export PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:\$PATH && bash ./test/check.sh ci"
+            su - runner -c "bash -o pipefail -c 'cd $GITHUB_WORKSPACE && export TEST_PG_VERSION=${{ matrix.pg_version }} TEST_EVENT_BACKEND=${{ matrix.event_backend }} PERF_SCALE=${PERF_SCALE:-50} PERF_REPS=${PERF_REPS:-3} PERF_BUILD_LABEL=io_layer PERF_EV_KEY=ev_backend && export PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:\$PATH && ./test/check.sh ci 2>&1 | tee /tmp/check-io_layer-${{ matrix.pg_version }}-${{ matrix.event_backend }}.log'"
           fi
+
+      - name: Collect perf results
+        if: always() && matrix.compiler == 'clang' && matrix.build_type == 'Debug'
+        run: |
+          LOG="/tmp/check-io_layer-${{ matrix.pg_version }}-${{ matrix.event_backend }}.log"
+          OUT="/tmp/perf-results-io_layer-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.pg_version }}-${{ matrix.event_backend }}.txt"
+          if [ -f "$LOG" ]; then
+            grep -h "^PERF_RESULT " "$LOG" > "$OUT" || true
+          else
+            : > "$OUT"
+          fi
+          echo "--- perf results ($OUT) ---"
+          cat "$OUT" || true
+          # This combo was supposed to emit perf: an empty file means the log is
+          # missing or the probe emitted nothing — fail here, not green.
+          if [ ! -s "$OUT" ]; then
+            echo "ERROR: no PERF_RESULT lines (log $LOG missing or perf probe emitted nothing)" >&2
+            exit 1
+          fi
+
+      - name: Upload perf results
+        if: always() && matrix.compiler == 'clang' && matrix.build_type == 'Debug'
+        uses: actions/upload-artifact@v5
+        with:
+          name: perf-results-io_layer-${{ matrix.compiler }}-${{ matrix.build_type }}-pg${{ matrix.pg_version }}-${{ matrix.event_backend }}
+          path: /tmp/perf-results-io_layer-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.pg_version }}-${{ matrix.event_backend }}.txt
+          retention-days: 14
 
       - name: Report coverage summary
         if: matrix.compiler == 'clang' && matrix.build_type == 'Debug'
@@ -171,6 +202,160 @@ jobs:
         with:
           name: logs-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ matrix.pg_version }}-${{ matrix.event_backend }}
           path: /tmp/pgmoneta-test/log
+          retention-days: 90
+
+  test-main-baseline:
+    needs: [format-check]
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux/rockylinux:10
+      options: --security-opt seccomp=unconfined
+
+    strategy:
+      matrix:
+        pg_version: [14, 15, 17]
+        event_backend: [epoll, iouring]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Dependencies
+        run: |
+          dnf -y install dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf -y install epel-release
+          dnf -y install \
+            git gcc clang clang-tools-extra cmake make \
+            liburing-devel libev-devel openssl openssl-devel \
+            systemd systemd-devel zlib zlib-devel \
+            libzstd libzstd-devel lz4 lz4-devel \
+            libssh libssh-devel libatomic \
+            python3-docutils bzip2 bzip2-devel \
+            libarchive libarchive-devel libyaml-devel \
+            check check-devel llvm \
+            libasan libubsan \
+            net-tools procps-ng ncurses-devel \
+            util-linux sudo which zstd
+
+      # Intentional dep asymmetry vs the io_layer job (finding #27): io_layer
+      # removed libev so its job omits libev-devel, while the main baseline
+      # still needs it — assert it is actually present.
+      - name: Assert libev devel present (baseline only)
+        run: rpm -q libev-devel
+
+      - name: Mark workspace as safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install PostgreSQL v${{ matrix.pg_version }}
+        run: |
+          dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-10-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+          dnf -qy module disable postgresql 2>/dev/null || true
+          dnf install -y postgresql${{ matrix.pg_version }} postgresql${{ matrix.pg_version }}-server postgresql${{ matrix.pg_version }}-contrib postgresql${{ matrix.pg_version }}-libs postgresql${{ matrix.pg_version }}-devel
+
+      - name: Set Env Path Variable
+        run: |
+          echo "PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:$PATH" >> $GITHUB_ENV
+          echo $PATH
+
+      - name: Install pgmoneta_ext
+        run: |
+          git_repo="https://github.com/pgmoneta/pgmoneta_ext.git"
+          cd /tmp/
+          git clone --branch "main" --single-branch --depth 1 "$git_repo"
+          cd /tmp/pgmoneta_ext/
+          mkdir build
+          cd /tmp/pgmoneta_ext/build/
+          cmake -DDOCS=false ..
+          make
+          make install
+
+      - name: Build main-branch baseline
+        run: |
+          # The checkout is shallow; unshallow so merge-base resolves the true fork point.
+          git fetch origin main --unshallow 2>/dev/null || git fetch origin main
+          BASE_SHA=$(git merge-base HEAD origin/main)
+          echo "Baseline pinned to merge-base HEAD origin/main: $BASE_SHA"
+          echo "BASE_SHA=$BASE_SHA" >> $GITHUB_ENV
+          echo "$BASE_SHA" > /tmp/baseline-sha.txt
+          git worktree prune
+          git worktree add --detach /tmp/pgmoneta-main "$BASE_SHA"
+          mkdir -p /tmp/pgmoneta-main/build
+          cd /tmp/pgmoneta-main/build
+          export CC=/usr/bin/clang
+          cmake -DCMAKE_BUILD_TYPE=Debug -DDOCS=FALSE ..
+          make -j$(nproc)
+
+      - name: Create test user
+        run: |
+          useradd -m -s /bin/bash runner
+          echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+          chown -R runner:runner $GITHUB_WORKSPACE
+          # The baseline worktree was built as root above — hand it to the
+          # test user now that it exists (`runner` is the username created
+          # in this file, verified not assumed).
+          chown -R runner:runner /tmp/pgmoneta-main
+
+      - name: Run Tests (main binaries via this branch harness)
+        timeout-minutes: 45
+        run: |
+          # Defaults: PERF_SCALE=50 PERF_REPS=3 (validated/clamped in test/testcases/test_perf.c).
+          # `su -` drops the outer environment, so the full PERF_*/TEST_* set is
+          # re-exported inside; bash -o pipefail -c makes check.sh (not tee) drive the exit code.
+          # Compat gate for mixed trees is check.sh's `pgmoneta -V` comparison
+          # (finding #14) — no separate job (finding #31).
+          su - runner -c "bash -o pipefail -c 'cd $GITHUB_WORKSPACE && export TEST_PG_VERSION=${{ matrix.pg_version }} TEST_EVENT_BACKEND=${{ matrix.event_backend }} PERF_SCALE=${PERF_SCALE:-50} PERF_REPS=${PERF_REPS:-3} PERF_BUILD_LABEL=main PERF_EV_KEY=libev PERF_BIN_DIR=/tmp/pgmoneta-main/build/src && export PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:\$PATH && ./test/check.sh ci 2>&1 | tee /tmp/check-main-${{ matrix.pg_version }}-${{ matrix.event_backend }}.log'"
+
+      - name: Collect perf results
+        if: always()
+        run: |
+          LOG="/tmp/check-main-${{ matrix.pg_version }}-${{ matrix.event_backend }}.log"
+          OUT="/tmp/perf-results-main-clang-Debug-${{ matrix.pg_version }}-${{ matrix.event_backend }}.txt"
+          if [ -f "$LOG" ]; then
+            grep -h "^PERF_RESULT " "$LOG" > "$OUT" || true
+          else
+            : > "$OUT"
+          fi
+          echo "--- perf results ($OUT) ---"
+          cat "$OUT" || true
+          # Every baseline combo runs the suite, so every one must emit perf.
+          if [ ! -s "$OUT" ]; then
+            echo "ERROR: no PERF_RESULT lines (log $LOG missing or perf probe emitted nothing)" >&2
+            exit 1
+          fi
+
+      - name: Upload perf results
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: perf-results-main-clang-Debug-pg${{ matrix.pg_version }}-${{ matrix.event_backend }}
+          path: /tmp/perf-results-main-clang-Debug-${{ matrix.pg_version }}-${{ matrix.event_backend }}.txt
+          retention-days: 14
+
+      - name: Upload baseline SHA
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          # Per-combo name (same SHA content): identical artifact names from
+          # parallel jobs would collide on upload/download.
+          name: baseline-sha-pg${{ matrix.pg_version }}-${{ matrix.event_backend }}
+          path: /tmp/baseline-sha.txt
+          retention-days: 14
+
+      - name: Upload Run Log as Artifacts
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: logs-main-clang-Debug-pg${{ matrix.pg_version }}-${{ matrix.event_backend }}
+          path: /tmp/pgmoneta-test/log
+          retention-days: 90
+
+      - name: Upload All Coverage Reports as Artifact
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-reports-main-clang-Debug-pg${{ matrix.pg_version }}-${{ matrix.event_backend }}
+          path: /tmp/pgmoneta-test/coverage
           retention-days: 90
 
   storage-engines:
@@ -335,3 +520,123 @@ jobs:
           name: storage-engines-logs-${{ env.PG_VERSION }}-${{ matrix.event_backend }}
           path: ${{ env.ROOT_DIR }}
           retention-days: 14
+
+  perf-summary:
+    # needs lists whole jobs: per-matrix-combo needs cannot be selected in GitHub Actions (finding #23).
+    needs: [build-linux, test-main-baseline]
+    if: "!cancelled()"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download perf result artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: perf-results-*
+          merge-multiple: true
+          path: ./perf-results
+
+      - name: Download baseline SHA
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v5
+        with:
+          pattern: baseline-sha-*
+          merge-multiple: true
+          path: ./perf-meta
+
+      - name: Jobs status preamble
+        if: always()
+        run: |
+          echo "Producer status: build-linux=${{ needs.build-linux.result }} test-main-baseline=${{ needs.test-main-baseline.result }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Render perf summary
+        if: always()
+        env:
+          PERF_REPS: ${{ vars.PERF_REPS || 3 }}
+        run: |
+          python3 - <<'EOF'
+          import glob
+          import os
+          import re
+          import statistics
+          import sys
+
+          line_re = re.compile(r'^PERF_RESULT\s+(.*)$')
+          kv_re = re.compile(r'(\w+)=(\S+)')
+          try:
+              expected_reps = int(os.environ.get('PERF_REPS', '3'))
+          except ValueError:
+              expected_reps = 3
+
+          try:
+              with open('perf-meta/baseline-sha.txt') as f:
+                  base_sha = f.read().strip() or 'unknown'
+          except OSError:
+              base_sha = 'unknown'
+
+          dropped = 0
+          malformed = 0
+          groups = {}
+          files = sorted(glob.glob('perf-results/*.txt'))
+          for path in files:
+              with open(path) as f:
+                  for raw in f:
+                      s = raw.strip()
+                      if not s:
+                          continue
+                      m = line_re.match(s)
+                      if not m:
+                          dropped += 1
+                          continue
+                      kvs = dict(kv_re.findall(m.group(1)))
+                      try:
+                          build = kvs['build']
+                          backend = kvs['backend']
+                          pg = kvs['pg']
+                          ms = int(kvs['ms'])
+                          nbytes = int(kvs['bytes'])
+                      except (KeyError, ValueError):
+                          malformed += 1
+                          continue
+                      groups.setdefault((build, backend, pg), []).append((ms, nbytes))
+
+          def mbps(ms, nbytes):
+              if ms <= 0:
+                  return None
+              return (nbytes / 1048576.0) / (ms / 1000.0)
+
+          rows = []
+          for key in sorted(groups, key=lambda k: (k[2], k[0], k[1])):
+              vals = [v for v in (mbps(ms, b) for ms, b in groups[key]) if v is not None]
+              if not vals:
+                  continue
+              rows.append((key[0], key[1], key[2], len(vals), statistics.median(vals)))
+
+          baselines = {pg: med for (build, backend, pg, n, med) in rows if build == 'main' and backend == 'epoll'}
+
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write('## Perf summary (backup throughput)\n\n')
+              out.write('Baseline `main` pinned to merge-base: `{}`\n\n'.format(base_sha))
+              out.write('Parsed {} file(s): {} dropped line(s), {} malformed PERF_RESULT line(s).\n\n'.format(len(files), dropped, malformed))
+              if not rows:
+                  out.write('ERROR: No PERF_RESULT lines found in perf-results artifacts ')
+                  out.write('(files seen: {}; dropped: {}; malformed: {}). '.format(len(files), dropped, malformed))
+                  out.write('Producer jobs may have failed/skipped before emitting perf — see the preamble above.\n')
+                  sys.exit(1)
+              out.write('| Source | Backend | PG | Reps | Median MB/s | Delta vs main/epoll |\n')
+              out.write('|---|---|---|---|---|---|\n')
+              for (build, backend, pg, n, med) in rows:
+                  cells = [build, backend, pg, str(n), '{:.1f}'.format(med)]
+                  if n < expected_reps:
+                      cells.append('WARNING: partial perf data ({}/{})'.format(n, expected_reps))
+                  else:
+                      base = baselines.get(pg)
+                      if base is None or base <= 0:
+                          cells.append('MISSING main/epoll baseline for pg {}'.format(pg))
+                      elif build == 'main' and backend == 'epoll':
+                          cells.append('baseline')
+                      else:
+                          cells.append('{:+.1f}%'.format((med - base) / base * 100.0))
+                  out.write('| {} |\n'.format(' | '.join(cells)))
+              out.write('\nNote: `main` uses the libev backend spelling `iouring` (no underscore); `io_layer` uses `io_uring`.\n')
+          EOF

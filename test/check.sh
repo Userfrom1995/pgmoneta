@@ -37,7 +37,9 @@ CONTAINER_NAME="pgmoneta-test-postgresql$PG_VERSION"
 
 SCRIPT_DIR="$(realpath "$(dirname "${BASH_SOURCE[0]}")")"
 PROJECT_DIRECTORY=$(realpath "$SCRIPT_DIR/..")
-EXECUTABLE_DIRECTORY=$PROJECT_DIRECTORY/build/src
+# PERF_BIN_DIR lets check.sh run binaries built from another tree
+# (e.g. a main-branch worktree) while reusing this harness end to end.
+EXECUTABLE_DIRECTORY=${PERF_BIN_DIR:-$PROJECT_DIRECTORY/build/src}
 TEST_DIRECTORY=$PROJECT_DIRECTORY/build/test
 TEST_PG_DIRECTORY="$PROJECT_DIRECTORY/test/postgresql/src/postgresql$PG_VERSION"
 
@@ -332,7 +334,7 @@ log_path = $LOG_DIR/pgmoneta.log
 unix_socket_dir = /tmp/
 create_slot = yes
 workspace = $WORKSPACE_DIRECTORY
-ev_backend = $EVENT_BACKEND
+${PERF_EV_KEY:-ev_backend} = $EVENT_BACKEND
 
 # primary configuration
 [primary]
@@ -353,6 +355,73 @@ EOF
    echo "Keep a sample pgmoneta configuration"
    cp $CONFIGURATION_DIRECTORY/pgmoneta.conf $CONFIGURATION_DIRECTORY/pgmoneta.conf.sample
    echo ""
+}
+
+# Binary-compatibility gate for mixed trees (finding #14): the MCTF test
+# runner always comes from this tree while the server binaries may come from
+# $PERF_BIN_DIR (a main-branch worktree). Refuse to run mixed protocol peers
+# whose versions differ. `pgmoneta -V` prints "pgmoneta <VERSION>" and exits
+# non-zero by design (src/main.c:version), hence `|| true`.
+assert_perf_bin_compat() {
+  if [[ -n "${PERF_BIN_DIR:-}" ]]; then
+    local branch_ver bin_ver
+    branch_ver=$("$PROJECT_DIRECTORY/build/src/pgmoneta" -V 2>&1 || true)
+    bin_ver=$("$PERF_BIN_DIR/pgmoneta" -V 2>&1 || true)
+    echo "Branch build version:   $branch_ver"
+    echo "PERF_BIN_DIR version:   $bin_ver"
+    if [[ -z "$bin_ver" ]]; then
+      echo "ERROR: PERF_BIN_DIR=$PERF_BIN_DIR does not contain an executable pgmoneta" >&2
+      exit 1
+    fi
+    if [[ -z "$branch_ver" ]]; then
+      echo "ERROR: branch build pgmoneta missing; cannot gate mixed-tree compatibility" >&2
+      exit 1
+    fi
+    if [[ "$branch_ver" != "$bin_ver" ]]; then
+      echo "ERROR: binary mismatch: branch '$branch_ver' vs PERF_BIN_DIR '$bin_ver'; refusing mixed-tree run" >&2
+      exit 1
+    fi
+    echo "Binary compatibility gate passed ($branch_ver)"
+  fi
+}
+
+# Assert the effective event backend matches the request (finding #16).
+# The marker differs per branch family: io_layer logs
+# "Selected backend '<name>'" (src/libpgmoneta/configuration.c), while main
+# has no such line and instead logs "libev engine: <name>" from src/main.c
+# (engine names like epoll/iouring, see pgmoneta_libev_engine). Both are
+# pgmoneta_log_debug, present because the harness sets log_level=debug5.
+assert_effective_backend() {
+  local key="${PERF_EV_KEY:-ev_backend}"
+  local expect=""
+
+  echo "Asserting effective event backend (requested: $EVENT_BACKEND, key family: $key)"
+  if [[ ! -f "$LOG_DIR/pgmoneta.log" ]]; then
+    echo "ERROR: server log $LOG_DIR/pgmoneta.log not found; cannot verify backend" >&2
+    exit 1
+  fi
+  if [[ "$key" == "ev_backend" ]]; then
+    if [[ "$EVENT_BACKEND" == "auto" ]]; then
+      expect="Selected backend '"
+    else
+      expect="Selected backend '$EVENT_BACKEND'"
+    fi
+  else
+    # libev family (main branch): exact assertion where possible; with
+    # "auto" the engine is chosen at runtime, so only require the marker.
+    if [[ "$EVENT_BACKEND" == "auto" ]]; then
+      expect="libev engine: "
+    else
+      expect="libev engine: $EVENT_BACKEND"
+    fi
+  fi
+  if ! grep -Fq "$expect" "$LOG_DIR/pgmoneta.log"; then
+    echo "ERROR: effective backend mismatch: marker '$expect' not found in $LOG_DIR/pgmoneta.log" >&2
+    grep -F "Selected backend" "$LOG_DIR/pgmoneta.log" | tail -3 || true
+    grep -F "libev engine:" "$LOG_DIR/pgmoneta.log" | tail -3 || true
+    exit 1
+  fi
+  echo "Effective backend verified: $(grep -F "$expect" "$LOG_DIR/pgmoneta.log" | tail -1)"
 }
 
 export_pgmoneta_test_variables() {
@@ -450,7 +519,27 @@ do_setup() {
   chmod -R 777 $PG_LOG_DIR
   chmod -R 777 $PGCONF_DIRECTORY
 
-  if need_compile; then
+  if [[ -n "${PERF_BIN_DIR:-}" ]]; then
+    # Baseline mode (finding #15): server binaries are prebuilt inputs from
+    # another tree — never rebuild them for staleness. The MCTF test runner
+    # still comes from this tree, so configure/build only when it is missing;
+    # otherwise verify the prebuilt executables exist (fail loud, no build).
+    if [[ ! -x "$TEST_DIRECTORY/pgmoneta-test" ]]; then
+      echo "Building test runner from this tree (server binaries taken prebuilt from PERF_BIN_DIR=$PERF_BIN_DIR)"
+      mkdir -p "$PROJECT_DIRECTORY/build"
+      cd "$PROJECT_DIRECTORY/build"
+      export CC=$(which clang)
+      cmake -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DDOCS=FALSE ..
+      make -j$(nproc)
+      cd ..
+    else
+      echo "Test runner present, skipping rebuild (PERF_BIN_DIR mode: server binaries are prebuilt inputs)"
+    fi
+    if [[ ! -x "$EXECUTABLE_DIRECTORY/pgmoneta" ]]; then
+      echo "ERROR: PERF_BIN_DIR=$PERF_BIN_DIR does not contain an executable pgmoneta" >&2
+      exit 1
+    fi
+  elif need_compile; then
     echo "Building pgmoneta (binaries missing or sources changed)"
     mkdir -p "$PROJECT_DIRECTORY/build"
     cd "$PROJECT_DIRECTORY/build"
@@ -486,6 +575,8 @@ do_setup() {
 execute_testcases() {
    echo "Execute MCTF Testcases"
    set +e
+
+   assert_perf_bin_compat
 
    if pgrep -f pgmoneta >/dev/null 2>&1 || [[ -f "/tmp/pgmoneta.localhost.pid" ]]; then
       echo "Clean up any existing pgmoneta processes"
@@ -544,6 +635,8 @@ execute_testcases() {
       sleep 2
    done
 
+   assert_effective_backend
+
    echo "Start running MCTF tests"
    if [[ -f "$TEST_DIRECTORY/pgmoneta-test" ]]; then
       TEST_FILTER_ARGS=()
@@ -577,6 +670,7 @@ usage() {
    echo " -t, --test NAME     Run only tests matching NAME"
    echo " -m, --module NAME   Run all tests in module NAME"
    echo " -i, --integration   Run only the storage-engine integration tests (all backends)"
+   echo " -t/-m select a subset (e.g. -t backup_full excludes the perf probe; the default full run includes it)"
    echo "Note: PGMONETA_TEST_PORT overrides the default container port (6432)"
    echo "Examples:"
    echo "  $0                           Run full test suite"
@@ -594,9 +688,15 @@ run_tests() {
   if need_build; then
     do_setup
   else
-    # Double-check: binaries and config must exist (cleanup removes BASE_DIR/conf, so config can be missing)
+    # Double-check: binaries and config must exist (cleanup removes BASE_DIR/conf, so config can be missing).
+    # In PERF_BIN_DIR mode skip the need_compile staleness rebuild (finding #15):
+    # server binaries are prebuilt inputs, so only missing files trigger a setup.
+    rebuild_for_staleness=false
+    if [[ -z "${PERF_BIN_DIR:-}" ]] && need_compile; then
+      rebuild_for_staleness=true
+    fi
     if [[ ! -f "$EXECUTABLE_DIRECTORY/pgmoneta" ]] || [[ ! -f "$TEST_DIRECTORY/pgmoneta-test" ]] \
-       || [[ ! -f "$CONFIGURATION_DIRECTORY/pgmoneta.conf" ]] || need_compile; then
+       || [[ ! -f "$CONFIGURATION_DIRECTORY/pgmoneta.conf" ]] || [[ "$rebuild_for_staleness" == "true" ]]; then
       echo "Environment incomplete or sources changed, running build"
       do_setup
     else

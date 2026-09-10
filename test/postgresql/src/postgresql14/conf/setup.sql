@@ -48,3 +48,16 @@ GRANT EXECUTE ON FUNCTION pg_stop_backup(boolean, boolean) TO PG_REPL_USER_NAME;
 
 -- GRANT REPL_USER privilege to perform CHECKPOINT and pg_switch_wal
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_switch_wal() TO PG_REPL_USER_NAME;
+
+-- GRANT test user CHECKPOINT for the perf throughput probe (test_perf.c
+-- checkpoints the seeded dataset before timed full backups). The
+-- pg_checkpoint role exists only since PG15, so gate on the role for a
+-- uniform fixture (PG14 simply skips the seed checkpoint; the quiesce
+-- drain still applies).
+DO $$
+BEGIN
+   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pg_checkpoint') THEN
+      GRANT pg_checkpoint TO PG_USER_NAME;
+   END IF;
+END
+$$;

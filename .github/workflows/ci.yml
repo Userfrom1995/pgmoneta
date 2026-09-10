@@ -271,20 +271,23 @@ jobs:
           make install
 
       - name: Build main-branch baseline
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Pin to the workspace dir: git discovery must not depend on the
-          # step's inherited cwd (cwd outside the repo fails with
-          # "not a git repository ... stopping at filesystem boundary").
-          cd "$GITHUB_WORKSPACE"
-          test -d .git || { echo "FATAL: no git repo at $GITHUB_WORKSPACE"; ls -la "$GITHUB_WORKSPACE"; exit 1; }
-          # The checkout is shallow; unshallow so merge-base resolves the true fork point.
-          git fetch origin main --unshallow 2>/dev/null || git fetch origin main
-          BASE_SHA=$(git merge-base HEAD origin/main)
-          echo "Baseline pinned to merge-base HEAD origin/main: $BASE_SHA"
+          # The actions/checkout workspace in this container job carries files
+          # but no .git metadata, so fetch/merge-base/worktree against the PR
+          # branch cannot work here. Clone main fresh instead; the baseline is
+          # main HEAD and its exact SHA is recorded below and in the perf
+          # summary, keeping runs reproducible without merge-base.
+          rm -rf /tmp/pgmoneta-main
+          git clone --branch main --single-branch --depth 1 \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" \
+            /tmp/pgmoneta-main
+          cd /tmp/pgmoneta-main
+          BASE_SHA=$(git rev-parse HEAD)
+          echo "Baseline pinned to main HEAD: $BASE_SHA"
           echo "BASE_SHA=$BASE_SHA" >> $GITHUB_ENV
           echo "$BASE_SHA" > /tmp/baseline-sha.txt
-          git worktree prune
-          git worktree add --detach /tmp/pgmoneta-main "$BASE_SHA"
           mkdir -p /tmp/pgmoneta-main/build
           cd /tmp/pgmoneta-main/build
           export CC=/usr/bin/clang
@@ -296,7 +299,7 @@ jobs:
           useradd -m -s /bin/bash runner
           echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
           chown -R runner:runner $GITHUB_WORKSPACE
-          # The baseline worktree was built as root above — hand it to the
+          # The baseline clone was built as root above — hand it to the
           # test user now that it exists (`runner` is the username created
           # in this file, verified not assumed).
           chown -R runner:runner /tmp/pgmoneta-main
@@ -621,7 +624,7 @@ jobs:
 
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
               out.write('## Perf summary (backup throughput)\n\n')
-              out.write('Baseline `main` pinned to merge-base: `{}`\n\n'.format(base_sha))
+              out.write('Baseline `main` pinned to main HEAD: `{}`\n\n'.format(base_sha))
               out.write('Parsed {} file(s): {} dropped line(s), {} malformed PERF_RESULT line(s).\n\n'.format(len(files), dropped, malformed))
               if not rows:
                   out.write('ERROR: No PERF_RESULT lines found in perf-results artifacts ')

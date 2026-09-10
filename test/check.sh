@@ -843,8 +843,8 @@ run_perf() {
    # (Needed even though daemon stdio is detached — a lingering server would
    # otherwise keep WAL streaming and hold resources until job timeout.)
    echo "=== shutting down pgmoneta (data/logs left in place, no cleanup) ==="
-   $EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF shutdown 2>/dev/null || true
-   sleep 5
+   $EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF shutdown
+
 }
 
 SUBCOMMAND=""

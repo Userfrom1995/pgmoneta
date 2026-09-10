@@ -432,7 +432,9 @@ main(int argc, char** argv)
    char* password = NULL;
    bool verbose = false;
    char* logfile = NULL;
-   bool do_free = true;
+   /* Only heap-allocated passwords (interactive prompt below) may be freed;
+    * -P/--password points into argv and must never be freed (ASan bad-free). */
+   bool do_free = false;
    int need_server_conn = 1;
    int is_server_conn = 0;
    /* Store the result from command parser*/
@@ -866,10 +868,7 @@ password:
          printf("Password : ");
          password = pgmoneta_get_password();
          printf("\n");
-      }
-      else
-      {
-         do_free = false;
+         do_free = true;
       }
 
       // Validate password is valid UTF-8

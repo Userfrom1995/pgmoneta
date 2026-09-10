@@ -757,9 +757,10 @@ jobs:
               cpus = [cpu_by_rep.get((build, backend, pg, flags, rep)) for rep, _, _ in groups[key]]
               cpus = [c for c in cpus if c is not None]
               med_cpu = statistics.median(cpus) if cpus else None
-              rows.append((build, backend, pg, flags, len(vals), statistics.median(vals), med_cpu))
+              med_bytes = int(statistics.median([by for _, _, by in groups[key]]))
+              rows.append((build, backend, pg, flags, len(vals), statistics.median(vals), med_cpu, med_bytes))
 
-          baselines = {pg: med for (build, backend, pg, flags, n, med, _) in rows
+          baselines = {pg: med for (build, backend, pg, flags, n, med, _, _) in rows
                        if build == 'main' and backend == 'epoll' and flags == 'base'}
 
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
@@ -771,10 +772,10 @@ jobs:
                   out.write('(files seen: {}; dropped: {}; malformed: {}). '.format(len(files), dropped, malformed))
                   out.write('Producer jobs may have failed/skipped before emitting perf — see the preamble above.\n')
                   sys.exit(1)
-              out.write('| Source | Backend | PG | Flags | Reps | Median MB/s | Delta vs main/epoll/base |\n')
-              out.write('|---|---|---|---|---|---|---|\n')
-              for (build, backend, pg, flags, n, med, _) in rows:
-                  cells = [build, backend, pg, flags, str(n), '{:.1f}'.format(med)]
+              out.write('| Source | Backend | PG | Flags | Reps | Median backup | Median MB/s | Delta vs main/epoll/base |\n')
+              out.write('|---|---|---|---|---|---|---|---|\n')
+              for (build, backend, pg, flags, n, med, _, med_bytes) in rows:
+                  cells = [build, backend, pg, flags, str(n), '{:.1f}'.format(med_bytes / 1048576.0), '{:.1f}'.format(med)]
                   if n < expected_reps:
                       cells.append('WARNING: partial perf data ({}/{})'.format(n, expected_reps))
                   else:
@@ -790,7 +791,7 @@ jobs:
               out.write('\n## Efficiency (CPU + management latency)\n\n')
               out.write('| Source | Backend | PG | Flags | Median CPU s/rep | MB per CPU-s | ping p50/p99 seq (ms) | ping p50/p99 burst (ms) |\n')
               out.write('|---|---|---|---|---|---|---|---|\n')
-              for (build, backend, pg, flags, n, med, med_cpu) in rows:
+              for (build, backend, pg, flags, n, med, med_cpu, _) in rows:
                   med_mb = statistics.median([by for _, _, by in groups[(build, backend, pg, flags)]]) / 1048576.0
                   if med_cpu is None or med_cpu <= 0:
                       cpu_s, eff = 'n/a', 'n/a'
@@ -808,11 +809,11 @@ jobs:
                        'dropped': dropped, 'malformed': malformed},
               'throughput': [
                   {'build': b, 'backend': be, 'pg': pg, 'flags': fl, 'reps': n,
-                   'median_mbs': med,
+                   'median_mbs': med, 'median_bytes': med_bytes,
                    'samples': [{'rep': r, 'ms': ms, 'bytes': by,
                                 'cpu_s': cpu_by_rep.get((b, be, pg, fl, r))}
                                for r, ms, by in sorted(groups[(b, be, pg, fl)])]}
-                  for (b, be, pg, fl, n, med, _) in rows
+                  for (b, be, pg, fl, n, med, _, med_bytes) in rows
               ],
               'latency': [
                   {'build': b, 'backend': be, 'pg': pg, 'flags': fl, 'mode': m, **v}

@@ -41,6 +41,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -144,8 +145,8 @@ static int initialize_loop_backend(void);
 
 static struct event_loop* loop = NULL;
 static bool context_is_set = false;
-static _Atomic(struct signal_watcher*) signal_watchers[PGMONETA_NSIG] = {0};
-static _Atomic(signal_cb) signal_callbacks[PGMONETA_NSIG] = {0};
+static _Atomic(struct signal_watcher*) signal_watchers[PGMONETA_NSIG];
+static _Atomic(signal_cb) signal_callbacks[PGMONETA_NSIG];
 static volatile sig_atomic_t signal_pending[PGMONETA_NSIG] = {0};
 
 #if HAVE_LINUX
@@ -425,6 +426,21 @@ pgmoneta_event_loop_fork(void)
 
    /* no need to empty sigset */
    atomic_store(&loop->forked, true);
+
+   /* Children never pump the event loop, so the inherited signal_handler
+    * (which only sets signal_pending[]) would swallow terminating signals.
+    * Restore default dispositions so SIGTERM/SIGINT/SIGQUIT from the parent
+    * (e.g. kill(0, SIGTERM) at shutdown) actually terminate the child. */
+   {
+      struct sigaction sa;
+      memset(&sa, 0, sizeof(sa));
+      sa.sa_handler = SIG_DFL;
+      sigemptyset(&sa.sa_mask);
+      sigaction(SIGTERM, &sa, NULL);
+      sigaction(SIGINT, &sa, NULL);
+      sigaction(SIGQUIT, &sa, NULL);
+   }
+
    rc = loop_fork();
 
    return rc;
@@ -901,11 +917,8 @@ pgmoneta_io_send(struct io_watcher* watcher, struct message* msg)
          }
          if (errno == EAGAIN || errno == EWOULDBLOCK)
          {
-            fd_set write_fds;
-            FD_ZERO(&write_fds);
-            FD_SET(fd, &write_fds);
-            struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
-            int sret = select(fd + 1, NULL, &write_fds, NULL, &tv);
+            struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+            int sret = poll(&pfd, 1, 5000);
             if (sret > 0)
             {
                continue;
@@ -1035,13 +1048,16 @@ ev_io_uring_io_start(struct io_watcher* watcher)
          sqe->buf_group = 0;
          sqe->flags |= IOSQE_BUFFER_SELECT;
 #else
-         /* Declared here (not at function top): with multishot enabled this
-          * branch is compiled out, and an unused top-level declaration trips
-          * -Werror,-Wunused-variable on the flag builds. */
-         struct message* msg = pgmoneta_get_watcher_message(watcher);
-         /* Use MESSAGE_PARSE_BUFFER_SIZE to leave headroom and prevent buffer
-          * overflow when parsing message headers near the end of received data */
-         io_uring_prep_recv(sqe, watcher->fds.worker.rcv_fd, msg->data, MESSAGE_PARSE_BUFFER_SIZE, 0);
+         /* Scoped in braces (not declared at function top): with multishot
+          * enabled this branch is compiled out — a top-level declaration
+          * trips -Werror,-Wunused-variable, and a bare declaration after the
+          * `case` label trips -Werror,-Wc23-extensions on clang. */
+         {
+            struct message* msg = pgmoneta_get_watcher_message(watcher);
+            /* Use MESSAGE_PARSE_BUFFER_SIZE to leave headroom and prevent buffer
+             * overflow when parsing message headers near the end of received data */
+            io_uring_prep_recv(sqe, watcher->fds.worker.rcv_fd, msg->data, MESSAGE_PARSE_BUFFER_SIZE, 0);
+         }
 #endif /* EXPERIMENTAL_FEATURE_RECV_MULTISHOT_ENABLED */
          break;
       default:
@@ -1646,16 +1662,21 @@ ev_epoll_periodic_start(struct periodic_watcher* watcher)
 static int
 ev_epoll_periodic_stop(struct periodic_watcher* watcher)
 {
+   int rc = PGMONETA_EVENT_RC_OK;
+
    if (epoll_ctl(loop->epollfd, EPOLL_CTL_DEL, watcher->fd, NULL) == -1)
    {
       pgmoneta_log_error("epoll_ctl error: %s", strerror(errno));
-      return PGMONETA_EVENT_RC_ERROR;
+      rc = PGMONETA_EVENT_RC_ERROR;
    }
 
-   pgmoneta_disconnect(watcher->fd);
-   watcher->fd = -1;
+   if (watcher->fd != -1)
+   {
+      close(watcher->fd);
+      watcher->fd = -1;
+   }
 
-   return PGMONETA_EVENT_RC_OK;
+   return rc;
 }
 
 static int

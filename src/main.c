@@ -79,6 +79,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 
 #include <openssl/crypto.h>
 #ifdef HAVE_SYSTEMD
@@ -128,6 +129,7 @@ static int create_pidfile(void);
 static void remove_pidfile(void);
 static void shutdown_ports(bool remove);
 static void stop_io_watcher(struct io_watcher* watcher);
+static void terminate_children_and_wait(bool signal_group);
 
 struct accept_io
 {
@@ -161,6 +163,47 @@ stop_io_watcher(struct io_watcher* watcher)
    if (!pgmoneta_event_loop_is_forked())
    {
       pgmoneta_io_stop(watcher);
+   }
+}
+
+static void
+terminate_children_and_wait(bool signal_group)
+{
+   const int timeout_ms = 15000;
+   const int poll_ms = 150;
+   struct timespec req = {0, 150 * 1000 * 1000};
+   int elapsed_ms = 0;
+   pid_t w;
+
+   if (signal_group)
+   {
+      /* SIGTERM only: the parent shares the process group, SIGKILL would suicide. */
+      kill(0, SIGTERM);
+   }
+
+   for (;;)
+   {
+      do
+      {
+         errno = 0;
+         w = waitpid(-1, NULL, WNOHANG);
+      }
+      while (w > 0);
+
+      /* Already reaped by the SIGCHLD watcher (main.c sigchld_cb): ECHILD means done. */
+      if (w == -1 && errno == ECHILD)
+      {
+         return;
+      }
+
+      if (elapsed_ms >= timeout_ms)
+      {
+         pgmoneta_log_warn("pgmoneta: timed out waiting for children after %d ms; continuing shutdown", elapsed_ms);
+         return;
+      }
+
+      nanosleep(&req, NULL);
+      elapsed_ms += poll_ms;
    }
 }
 
@@ -1040,14 +1083,13 @@ main(int argc, char** argv)
 
    remove_pidfile();
 
+   /* Signal workers before tearing down shmem they may still touch,
+    * then reap them (bounded); only afterwards destroy shared memory. */
+   terminate_children_and_wait(daemon || stop);
+
    pgmoneta_stop_logging();
    pgmoneta_destroy_shared_memory(shmem, shmem_size);
    pgmoneta_destroy_shared_memory(prometheus_cache_shmem, prometheus_cache_shmem_size);
-
-   if (daemon || stop)
-   {
-      kill(0, SIGTERM);
-   }
 
    return 0;
 
@@ -1097,14 +1139,15 @@ error:
 
    config->running = false;
 
+   /* Same order as the normal path: no workers can be alive here
+    * (all forks happen after the event loop starts, and every goto error
+    * precedes it except none after init_receivewals), but keep the
+    * signal-then-reap-then-destroy order defensively. */
+   terminate_children_and_wait(daemon || stop);
+
    pgmoneta_stop_logging();
    pgmoneta_destroy_shared_memory(shmem, shmem_size);
    pgmoneta_destroy_shared_memory(prometheus_cache_shmem, prometheus_cache_shmem_size);
-
-   if (daemon || stop)
-   {
-      kill(0, SIGTERM);
-   }
 
    exit(1);
 

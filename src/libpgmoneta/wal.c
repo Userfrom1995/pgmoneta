@@ -1812,6 +1812,11 @@ pgmoneta_wal_server_compress_encrypt(int srv, char** argv, char* wal_file)
       int retry_count = 0;
       char* d = NULL;
 
+      /* Detach from the parent event loop: close inherited backend fds,
+       * mark this process forked (child guards), and restore default
+       * signal dispositions (see pgmoneta_event_loop_fork). */
+      pgmoneta_event_loop_fork();
+
       /* Boost priority for compression to complete faster */
       pgmoneta_set_priority(PRIORITY_HIGH);
 

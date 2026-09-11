@@ -2,6 +2,9 @@ name: Perf Sequential
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - io_layer
 
 jobs:
   perf-seq:

@@ -124,8 +124,24 @@ for idx in $(seq 0 $((NCELLS - 1))); do
   else
     sudo -E -u postgres /usr/pgsql-$PG/bin/pg_ctl -D /pgdata stop -m fast || true
   fi
-  pkill -9 -f pgmoneta || true
-  pkill -9 postgres || true
+  # Exact-name match (-x) ONLY. Never -f with these words: the workspace path
+  # (/__w/pgmoneta/pgmoneta) appears in our own ancestors' cmdlines (su,
+  # inner bash), so `pkill -f pgmoneta` SIGKILLs the very pipeline running
+  # this script (proven: EPERM on root su + "Killed" + step exit 137 in CI).
+  # -x matches comm, so su/bash/tee/scripts are immune, while the daemon
+  # (comm "pgmoneta") and postmaster (comm "postgres") still match.
+  pkill -9 -x pgmoneta || true
+  # Postmaster runs as the postgres user, which the runner cannot signal, so
+  # go through runuser/sudo like the pg_ctl stop above. Wrapper comms
+  # ("runuser"/"sudo") never match -x postgres.
+  if [ "$(id -u)" -eq 0 ]; then
+    runuser -m -u postgres -- pkill -9 -x postgres || true
+  else
+    sudo -E -u postgres pkill -9 -x postgres || true
+  fi
+  # Memory observability: one line per cell, so any future resource failure
+  # can be triaged from the log instead of theorized about afterwards.
+  free -m | head -2 || true
   # Fresh root + unique WAL slot per cell; guaranteed-fresh env per cell.
   export PGMONETA_TEST_ROOT="/tmp/pgmoneta-test-seq-pg${PG}-${nn}"
   export PERF_WAL_SLOT="pgmoneta_seq_${n}"

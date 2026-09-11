@@ -483,16 +483,19 @@ do_setup() {
 start_pgmoneta_server() {
    echo "=== pgmoneta server start ==="
 
-   if pgrep -f pgmoneta >/dev/null 2>&1 || [[ -f "/tmp/pgmoneta.localhost.pid" ]]; then
+   # Exact-name match (-x) ONLY: -f substring patterns can match our own
+   # ancestors' cmdlines (workspace path contains "pgmoneta") and SIGKILL
+   # the running pipeline (step exit 137). See loop-cells.sh teardown.
+   if pgrep -x pgmoneta >/dev/null 2>&1 || [[ -f "/tmp/pgmoneta.localhost.pid" ]]; then
       echo "Cleaning up any existing pgmoneta processes"
       if [[ -f "/tmp/pgmoneta.localhost.pid" ]]; then
          $EXECUTABLE_DIRECTORY/pgmoneta-cli -c $CLI_CONF shutdown 2>/dev/null || true
          sleep 3
       fi
-      if pgrep -f pgmoneta >/dev/null 2>&1; then
+      if pgrep -x pgmoneta >/dev/null 2>&1; then
          echo "Killing existing pgmoneta processes"
-         pkill -9 -f "${EXECUTABLE_DIRECTORY}/pgmoneta " || true
-         pkill -9 -f "${EXECUTABLE_DIRECTORY}/pgmoneta-cli " || true
+         pkill -9 -x pgmoneta || true
+         pkill -9 -x pgmoneta-cli || true
          sleep 2
       fi
       rm -f "/tmp/pgmoneta.localhost.pid"

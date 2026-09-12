@@ -175,11 +175,22 @@ terminate_children_and_wait(bool signal_group)
    int elapsed_ms = 0;
    pid_t w;
 
-   if (signal_group)
+   if (!signal_group)
    {
-      /* SIGTERM only: the parent shares the process group, SIGKILL would suicide. */
-      kill(0, SIGTERM);
+      /* Foreground break with no prior signal (e.g. backend error): nobody
+       * was asked to exit, so a 15s wait is pure dead time — and kill(0,…)
+       * here is unsafe, since foreground shares its process group with
+       * non-pgmoneta processes (supervising scripts, shells). Reap zombies
+       * that already exited and return immediately. */
+      while (waitpid(-1, NULL, WNOHANG) > 0)
+      {
+         ;
+      }
+      return;
    }
+
+   /* SIGTERM only: the parent shares the process group, SIGKILL would suicide. */
+   kill(0, SIGTERM);
 
    for (;;)
    {

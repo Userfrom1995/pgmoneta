@@ -52,6 +52,7 @@ jobs:
         compiler: [gcc, clang]
         build_type: [Debug, Release]
         pg_version: [14, 15, 17]
+        event_backend: [io_uring, epoll]
         exclude:
           - pg_version: 14
             compiler: gcc
@@ -71,6 +72,12 @@ jobs:
           - pg_version: 15
             compiler: clang
             build_type: Release
+          # Compile-only combos stay single-backend; only the clang-Debug
+          # combos below execute the suite, on both backends.
+          - compiler: gcc
+            event_backend: io_uring
+          - build_type: Release
+            event_backend: io_uring
       fail-fast: false
 
     steps:
@@ -143,7 +150,7 @@ jobs:
         run: |
           export TEST_PG_VERSION=${{ matrix.pg_version }}
           if [ "${{ matrix.compiler }}" = "clang" ] && [ "${{ matrix.build_type }}" = "Debug" ]; then
-            su - runner -c "cd $GITHUB_WORKSPACE && export TEST_PG_VERSION=${{ matrix.pg_version }} && export PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:\$PATH && bash ./test/check.sh ci"
+            su - runner -c "cd $GITHUB_WORKSPACE && export TEST_PG_VERSION=${{ matrix.pg_version }} TEST_EVENT_BACKEND=${{ matrix.event_backend }} && export PATH=/usr/pgsql-${{ matrix.pg_version }}/bin:\$PATH && bash ./test/check.sh ci"
           fi
 
       - name: Report coverage summary

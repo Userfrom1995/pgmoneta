@@ -328,6 +328,7 @@ log_path = $LOG_DIR/pgmoneta.log
 unix_socket_dir = /tmp/
 create_slot = yes
 workspace = $WORKSPACE_DIRECTORY
+ev_backend = ${TEST_EVENT_BACKEND:-auto}
 
 # primary configuration
 [primary]
@@ -521,6 +522,18 @@ execute_testcases() {
       fi
       sleep 2
    done
+
+   echo "Asserting effective event backend (requested: ${TEST_EVENT_BACKEND:-auto})"
+   if [[ ! -f "$LOG_DIR/pgmoneta.log" ]]; then
+      echo "ERROR: server log $LOG_DIR/pgmoneta.log not found; cannot verify backend" >&2
+      exit 1
+   fi
+   if [[ "${TEST_EVENT_BACKEND:-auto}" == "auto" ]]; then
+      grep -Fq "Event backend: " "$LOG_DIR/pgmoneta.log" || { echo "ERROR: no event backend marker in server log" >&2; exit 1; }
+   else
+      grep -Fq "Event backend: ${TEST_EVENT_BACKEND}" "$LOG_DIR/pgmoneta.log" || { echo "ERROR: effective backend mismatch: 'Event backend: ${TEST_EVENT_BACKEND}' not found in server log (silent fallback?)" >&2; grep -F "Event backend" "$LOG_DIR/pgmoneta.log" | tail -3 || true; exit 1; }
+   fi
+   echo "Effective backend verified: $(grep -F "Event backend" "$LOG_DIR/pgmoneta.log" | tail -1)"
 
    echo "Wait for WAL streaming to be ready"
    for i in {1..5}; do

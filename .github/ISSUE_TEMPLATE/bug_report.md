@@ -23,9 +23,9 @@ What is the version of pgmoneta ?
 
 What is the version of PostgreSQL ?
 
-**libev**
+**ev_backend / Kernel**
 
-What is the version of libev ?
+What is the ev_backend and kernel version ?
 
 **OpenSSL**
 

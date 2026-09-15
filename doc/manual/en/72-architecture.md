@@ -107,11 +107,18 @@ AuthenticationSASLFinal and AuthenticationOk. The SSLRequest message is supporte
 
 The remote management interface is defined in [remote.h][remote_h] ([remote.c][remote_c]).
 
-### libev usage
+### Event Loop Architecture
 
-[libev][libev] is used to handle network interactions, which is "activated" upon an `EV_READ` event.
+pgmoneta utilizes a custom event loop implemented in [ev.h][ev_h] ([ev.c][ev_c]) to handle network interactions, signal notifications, and periodic timers.
 
-Each process has its own event loop, such that the process only gets notified when data related only to that process is ready. The main loop handles the system wide "services" such as idle timeout checks and so on.
+The custom event loop supports multiple operating system backends:
+* `io_uring`: High-performance asynchronous I/O interface for Linux systems with `liburing >= 2.5`.
+* `epoll`: Linux I/O event notification facility, serving as the fallback when `io_uring` is unavailable.
+* `kqueue`: Scalable event notification mechanism on FreeBSD, OpenBSD, and macOS.
+
+The active backend can be configured via the `ev_backend` parameter (`auto`, `io_uring`, `epoll`, or `kqueue`).
+
+Each process maintains its own event loop instance, ensuring isolation so that a process is only notified for its own events. The main loop handles system-wide operations like connection acceptance and periodic timers, while worker processes run their own loop to handle client communication.
 
 ### Signals
 
@@ -129,7 +136,7 @@ However, some configuration settings requires a full restart of [**pgmoneta**][p
 
 * `hugepage`
 * `direct_io`
-* `libev`
+* `ev_backend`
 * `log_path`
 * `log_type`
 * `unix_socket_dir`

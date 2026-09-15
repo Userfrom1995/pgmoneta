@@ -1812,6 +1812,11 @@ pgmoneta_wal_server_compress_encrypt(int srv, char** argv, char* wal_file)
       int retry_count = 0;
       char* d = NULL;
 
+      /* Detach from the parent event loop: close inherited backend fds,
+       * mark this process forked (child guards), and restore default
+       * signal dispositions (see pgmoneta_event_loop_fork). */
+      pgmoneta_event_loop_fork();
+
       /* Boost priority for compression to complete faster */
       pgmoneta_set_priority(PRIORITY_HIGH);
 
@@ -1895,7 +1900,12 @@ retry:
          scan = true;
          active = false;
 
-         if (retry_count < 10)
+         /* The lock holder compresses/encrypts whole WAL segments (seconds of
+          * work), so a 10-retry/0.5s budget expires under ordinary backlog
+          * contention and logs a spurious ERROR for a transient condition
+          * that heals on the next iteration. Retry quietly for ~30s; a
+          * genuinely stuck holder still escalates to ERROR below. */
+         if (retry_count < 600)
          {
             SLEEP_AND_GOTO(50000000L, retry);
          }

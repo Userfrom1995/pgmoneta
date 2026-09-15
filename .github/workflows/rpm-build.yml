@@ -20,7 +20,7 @@ jobs:
           dnf install -y rpm-build gcc cmake make python3-docutils \
           liburing-devel openssl-devel systemd-devel libatomic \
           zlib-devel libzstd-devel lz4-devel bzip2-devel binutils chrpath \
-          ncurses-devel libarchive-devel libev libev-devel libssh-devel libyaml-devel \
+          ncurses-devel libarchive-devel libssh-devel libyaml-devel \
           lz4 openssl systemd zlib libzstd bzip2 git 
 
 

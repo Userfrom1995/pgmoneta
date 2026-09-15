@@ -10,7 +10,7 @@
 [gcc]: https://gcc.gnu.org
 [cmake]: https://cmake.org
 [make]: https://www.gnu.org/software/make/
-[libev]: http://software.schmorp.de/pkg/libev.html
+[liburing]: https://github.com/axboe/liburing
 [openssl]: http://www.openssl.org/
 [zlib]: https://zlib.net
 [zstd]: http://www.zstd.net
@@ -73,6 +73,8 @@
 [cli_c]: https://github.com/pgmoneta/pgmoneta/blob/main/src/cli.c
 [deque_c]: https://github.com/pgmoneta/pgmoneta/blob/main/src/libpgmoneta/deque.c
 [deque_h]: https://github.com/pgmoneta/pgmoneta/blob/main/src/include/deque.h
+[ev_c]: https://github.com/pgmoneta/pgmoneta/blob/main/src/libpgmoneta/ev.c
+[ev_h]: https://github.com/pgmoneta/pgmoneta/blob/main/src/include/ev.h
 [gzip_compression.c]: https://github.com/pgmoneta/pgmoneta/blob/main/src/libpgmoneta/gzip_compression.c
 [gzip_compression.h]: https://github.com/pgmoneta/pgmoneta/blob/main/src/include/gzip_compression.h
 [info_c]: https://github.com/pgmoneta/pgmoneta/blob/main/src/libpgmoneta/info.c

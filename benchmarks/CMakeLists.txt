@@ -57,7 +57,6 @@ if (benchmark)
     ${CMAKE_SOURCE_DIR}/src/include
     ${CMAKE_SOURCE_DIR}/test/include
     ${CMAKE_SOURCE_DIR}/test/libpgmonetatest
-    ${LIBEV_INCLUDE_DIRS}
     ${OPENSSL_INCLUDE_DIR}
     ${CURSES_INCLUDE_DIRS}
     ${LIBYAML_INCLUDE_DIRS}

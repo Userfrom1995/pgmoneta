@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026 The pgmoneta community
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -43,7 +43,6 @@
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
-#include <ev.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <libgen.h>
@@ -630,161 +629,6 @@ pgmoneta_swap(unsigned int i)
           ((i << 8) & 0x00ff0000) |
           ((i >> 8) & 0x0000ff00) |
           ((i >> 24) & 0x000000ff);
-}
-
-void
-pgmoneta_libev_engines(void)
-{
-   unsigned int engines = ev_supported_backends();
-
-   if (engines & EVBACKEND_SELECT)
-   {
-      pgmoneta_log_debug("libev available: select");
-   }
-   if (engines & EVBACKEND_POLL)
-   {
-      pgmoneta_log_debug("libev available: poll");
-   }
-   if (engines & EVBACKEND_EPOLL)
-   {
-      pgmoneta_log_debug("libev available: epoll");
-   }
-   if (engines & EVBACKEND_LINUXAIO)
-   {
-      pgmoneta_log_debug("libev available: linuxaio");
-   }
-   if (engines & EVBACKEND_IOURING)
-   {
-      pgmoneta_log_debug("libev available: iouring");
-   }
-   if (engines & EVBACKEND_KQUEUE)
-   {
-      pgmoneta_log_debug("libev available: kqueue");
-   }
-   if (engines & EVBACKEND_DEVPOLL)
-   {
-      pgmoneta_log_debug("libev available: devpoll");
-   }
-   if (engines & EVBACKEND_PORT)
-   {
-      pgmoneta_log_debug("libev available: port");
-   }
-}
-
-unsigned int
-pgmoneta_libev(char* engine)
-{
-   unsigned int engines = ev_supported_backends();
-
-   if (engine)
-   {
-      if (pgmoneta_compare_string("select", engine))
-      {
-         if (engines & EVBACKEND_SELECT)
-         {
-            return EVBACKEND_SELECT;
-         }
-         else
-         {
-            pgmoneta_log_warn("libev not available: select");
-         }
-      }
-      else if (pgmoneta_compare_string("poll", engine))
-      {
-         if (engines & EVBACKEND_POLL)
-         {
-            return EVBACKEND_POLL;
-         }
-         else
-         {
-            pgmoneta_log_warn("libev not available: poll");
-         }
-      }
-      else if (pgmoneta_compare_string("epoll", engine))
-      {
-         if (engines & EVBACKEND_EPOLL)
-         {
-            return EVBACKEND_EPOLL;
-         }
-         else
-         {
-            pgmoneta_log_warn("libev not available: epoll");
-         }
-      }
-      else if (pgmoneta_compare_string("linuxaio", engine))
-      {
-         return EVFLAG_AUTO;
-      }
-      else if (pgmoneta_compare_string("iouring", engine))
-      {
-         if (engines & EVBACKEND_IOURING)
-         {
-            return EVBACKEND_IOURING;
-         }
-         else
-         {
-            pgmoneta_log_warn("libev not available: iouring");
-         }
-      }
-      else if (pgmoneta_compare_string("devpoll", engine))
-      {
-         if (engines & EVBACKEND_DEVPOLL)
-         {
-            return EVBACKEND_DEVPOLL;
-         }
-         else
-         {
-            pgmoneta_log_warn("libev not available: devpoll");
-         }
-      }
-      else if (pgmoneta_compare_string("port", engine))
-      {
-         if (engines & EVBACKEND_PORT)
-         {
-            return EVBACKEND_PORT;
-         }
-         else
-         {
-            pgmoneta_log_warn("libev not available: port");
-         }
-      }
-      else if (pgmoneta_compare_string("auto", engine) || pgmoneta_compare_string("", engine))
-      {
-         return EVFLAG_AUTO;
-      }
-      else
-      {
-         pgmoneta_log_warn("libev unknown option: %s", engine);
-      }
-   }
-
-   return EVFLAG_AUTO;
-}
-
-char*
-pgmoneta_libev_engine(unsigned int val)
-{
-   switch (val)
-   {
-      case EVBACKEND_SELECT:
-         return "select";
-      case EVBACKEND_POLL:
-         return "poll";
-      case EVBACKEND_EPOLL:
-         return "epoll";
-      case EVBACKEND_LINUXAIO:
-         return "linuxaio";
-      case EVBACKEND_IOURING:
-         return "iouring";
-      case EVBACKEND_KQUEUE:
-         return "kqueue";
-      case EVBACKEND_DEVPOLL:
-         return "devpoll";
-      case EVBACKEND_PORT:
-         return "port";
-   }
-
-   return "Unknown";
 }
 
 char*

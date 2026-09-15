@@ -8,3 +8,5 @@ vendor/
 .cache
 *.uncrustify
 .DS_Store
+.specstory/
+.idea/

@@ -74,7 +74,7 @@ See a [sample](./etc/pgmoneta.conf) configuration for running `pgmoneta` on `loc
 | metrics_cert_file | | String | No | Certificate file for TLS for Prometheus metrics. This file must be owned by either the user running pgmoneta or root. |
 | metrics_key_file | | String | No | Private key file for TLS for Prometheus metrics. This file must be owned by either the user running pgmoneta or root. Additionally permissions must be at least `0640` when owned by root or `0600` otherwise. |
 | metrics_ca_file | | String | No | Certificate Authority (CA) file for TLS for Prometheus metrics. This file must be owned by either the user running pgmoneta or root.  |
-| libev | `auto` | String | No | Select the [libev](http://software.schmorp.de/pkg/libev.html) backend to use. Valid options: `auto`, `select`, `poll`, `epoll`, `iouring`, `devpoll` and `port` |
+| ev_backend | `auto` | String | No | The event loop backend to use. Valid options: `auto`, `io_uring`, `epoll`, `kqueue`. Changes to `ev_backend` require a restart of pgmoneta |
 | max_rate | 0 | Int | No | The maximum backup transfer rate in bytes per second. Use 0 to disable |
 | progress | off | Bool | No | Enable progress tracking |
 | verification | 0 | String | No | The time between verification of a backup. Setting this parameter to 0 disables verification. Supports suffixes: 's' (seconds, default), 'm' (minutes), 'h' (hours), 'd' (days), 'w' (weeks). |

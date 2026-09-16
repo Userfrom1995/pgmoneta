@@ -109,25 +109,25 @@ MCTF_TEST_NEGATIVE(test_configuration_reject_invalid_time)
    pgmoneta_test_setup();
 
    // Invalid suffix
-   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "10x", MANAGEMENT_ERROR_CONF_SET_ERROR) == 0, cleanup,
+   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "10x", MANAGEMENT_ERROR_CONF_SET_INVALID_VALUE) == 0, cleanup,
                "conf set 10x should fail");
 
    // Negative value
-   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "-1s", MANAGEMENT_ERROR_CONF_SET_ERROR) == 0, cleanup,
+   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "-1s", MANAGEMENT_ERROR_CONF_SET_INVALID_VALUE) == 0, cleanup,
                "conf set -1s should fail");
 
    // Mixed units
-   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "1h5s", MANAGEMENT_ERROR_CONF_SET_ERROR) == 0, cleanup,
+   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "1h5s", MANAGEMENT_ERROR_CONF_SET_INVALID_VALUE) == 0, cleanup,
                "conf set 1h5s should fail");
-   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "1h 5s", MANAGEMENT_ERROR_CONF_SET_ERROR) == 0, cleanup,
+   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "1h 5s", MANAGEMENT_ERROR_CONF_SET_INVALID_VALUE) == 0, cleanup,
                "conf set 1h 5s should fail");
 
    // Space between number and unit
-   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "10 s", MANAGEMENT_ERROR_CONF_SET_ERROR) == 0, cleanup,
+   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "10 s", MANAGEMENT_ERROR_CONF_SET_INVALID_VALUE) == 0, cleanup,
                "conf set 10 s should fail");
 
    // Non-numeric
-   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "abc", MANAGEMENT_ERROR_CONF_SET_ERROR) == 0, cleanup,
+   MCTF_ASSERT(pgmoneta_tsclient_conf_set(CONFIGURATION_ARGUMENT_METRICS_CACHE_MAX_AGE, "abc", MANAGEMENT_ERROR_CONF_SET_INVALID_VALUE) == 0, cleanup,
                "conf set abc should fail");
 
 cleanup:

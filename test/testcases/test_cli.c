@@ -134,7 +134,7 @@ MCTF_TEST_NEGATIVE(test_cli_conf_set_invalid_key)
 {
    pgmoneta_test_setup();
 
-   MCTF_ASSERT(pgmoneta_tsclient_conf_set("invalid_key", "value", MANAGEMENT_ERROR_CONF_SET_ERROR) == 0, cleanup,
+   MCTF_ASSERT(pgmoneta_tsclient_conf_set("invalid_key", "value", MANAGEMENT_ERROR_CONF_SET_UNKNOWN_CONFIGURATION_KEY) == 0, cleanup,
                "Conf set invalid_key should fail with ERROR");
 
 cleanup:

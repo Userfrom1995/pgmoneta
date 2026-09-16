@@ -153,6 +153,7 @@ static int conf_set(SSL* ssl, int socket, char* config_key, char* config_value, 
 static int process_result(SSL* ssl, int socket, int32_t output_format);
 static int process_get_result(SSL* ssl, int socket, char* param, int32_t output_format);
 static int process_set_result(SSL* ssl, int socket, char* config_key, int32_t output_format);
+static void print_conf_set_error(int32_t error_code, char* config_key);
 
 static int get_config_key_result(char* config_key, struct json* j, uintptr_t* r, int32_t output_format);
 
@@ -2172,6 +2173,38 @@ error:
    return 1;
 }
 
+static void
+print_conf_set_error(int32_t error_code, char* config_key)
+{
+   printf("Configuration change failed\n");
+
+   switch (error_code)
+   {
+      case MANAGEMENT_ERROR_CONF_SET_INVALID_VALUE:
+         printf("   Invalid value for configuration key '%s'\n", config_key ? config_key : "unknown");
+         break;
+      case MANAGEMENT_ERROR_CONF_SET_UNKNOWN_CONFIGURATION_KEY:
+         printf("   Unknown configuration key '%s'\n", config_key ? config_key : "unknown");
+         printf("   Valid formats: 'key', 'section.key', or 'section.context.key'\n");
+         break;
+      case MANAGEMENT_ERROR_CONF_SET_UNKNOWN_SERVER:
+         printf("   Unknown server in configuration key '%s'\n", config_key ? config_key : "unknown");
+         break;
+      case MANAGEMENT_ERROR_CONF_SET_NOCONFIG_KEY_OR_VALUE:
+         printf("   Missing configuration key or value\n");
+         break;
+      case MANAGEMENT_ERROR_CONF_SET_NOREQUEST:
+         printf("   Invalid management request\n");
+         break;
+      case MANAGEMENT_ERROR_CONF_SET_NETWORK:
+         printf("   Network error communicating with server (code %d)\n", error_code);
+         break;
+      default:
+         printf("   Configuration error (code %d)\n", error_code);
+         break;
+   }
+}
+
 static int
 process_set_result(SSL* ssl, int socket, char* config_key, int32_t output_format)
 {
@@ -2183,6 +2216,8 @@ process_set_result(SSL* ssl, int socket, char* config_key, int32_t output_format
    char* new_value = NULL;
    char* current_value = NULL;
    char* requested_value = NULL;
+   bool status = true;
+   int32_t error_code = 0;
 
    if (pgmoneta_management_read_json(ssl, socket, NULL, NULL, &read))
    {
@@ -2196,31 +2231,31 @@ process_set_result(SSL* ssl, int socket, char* config_key, int32_t output_format
       goto error;
    }
 
-   // For JSON output, just print the raw response
-   if (output_format == MANAGEMENT_OUTPUT_FORMAT_JSON)
-   {
-      pgmoneta_json_print(read, FORMAT_JSON);
-      pgmoneta_json_destroy(read);
-      return 0;
-   }
-
-   // Check for standard pgmoneta management response structure
+   /* Parse outcome/status/error_code ABOVE the JSON print so both paths
+    * observe the same error semantics (scope: this function only). */
    outcome = (struct json*)pgmoneta_json_get(read, MANAGEMENT_CATEGORY_OUTCOME);
    response = (struct json*)pgmoneta_json_get(read, MANAGEMENT_CATEGORY_RESPONSE);
 
-   // Check for errors first
    if (outcome)
    {
-      bool status = (bool)pgmoneta_json_get(outcome, MANAGEMENT_ARGUMENT_STATUS);
-      int32_t error_code = (int32_t)pgmoneta_json_get(outcome, MANAGEMENT_ARGUMENT_ERROR);
+      status = (bool)pgmoneta_json_get(outcome, MANAGEMENT_ARGUMENT_STATUS);
+      error_code = (int32_t)pgmoneta_json_get(outcome, MANAGEMENT_ARGUMENT_ERROR);
+   }
 
-      if (!status || error_code != 0)
-      {
-         printf("Configuration change failed\n");
-         printf("   Invalid key format: '%s'\n", config_key ? config_key : "unknown");
-         printf("   Valid formats: 'key', 'section.key', or 'section.context.key'\n");
-         goto error;
-      }
+   /* JSON path prints the raw response and returns outcome-derived exit code. */
+   if (output_format == MANAGEMENT_OUTPUT_FORMAT_JSON)
+   {
+      int rc = (status && error_code == 0) ? 0 : 1;
+      pgmoneta_json_print(read, FORMAT_JSON);
+      pgmoneta_json_destroy(read);
+      return rc;
+   }
+
+   /* Text path: errors first with per-code messaging. */
+   if (!status || error_code != 0)
+   {
+      print_conf_set_error(error_code, config_key);
+      goto error;
    }
 
    // Parse response for success cases
@@ -2242,13 +2277,19 @@ process_set_result(SSL* ssl, int socket, char* config_key, int32_t output_format
       printf("   New value: %s\n", new_value ? new_value : "unknown");
       printf("   Status: Active (applied to running instance)\n");
    }
-   else if (conf_status && pgmoneta_compare_string(conf_status, CONFIGURATION_STATUS_RESTART_REQUIRED))
+   else if (conf_status && (pgmoneta_compare_string(conf_status, CONFIGURATION_STATUS_RESTART_REQUIRED) ||
+                            pgmoneta_compare_string(conf_status, "success_restart_required")))
    {
+      /* Accept new "restart_required" and old "success_restart_required" for mixed-version. */
       printf("Configuration change requires manual restart\n");
       printf("   Parameter: %s\n", config_key ? config_key : "unknown");
       printf("   Current value: %s (unchanged in running instance)\n", current_value ? current_value : "unknown");
       printf("   Requested value: %s (cannot be applied to live instance)\n", requested_value ? requested_value : "unknown");
       printf("   Status: Requires full service restart\n");
+   }
+   else if (conf_status && pgmoneta_compare_string(conf_status, CONFIGURATION_STATUS_NO_CHANGE))
+   {
+      printf("No change: %s is already %s\n", config_key ? config_key : "unknown", old_value ? old_value : (new_value ? new_value : "unchanged"));
    }
    else
    {

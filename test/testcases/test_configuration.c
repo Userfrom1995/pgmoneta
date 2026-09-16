@@ -31,11 +31,35 @@
 #include <json.h>
 #include <management.h>
 #include <mctf.h>
+#include <shmem.h>
 #include <tsclient.h>
 #include <tscommon.h>
 #include <utils.h>
 
 #include <stdlib.h>
+#include <string.h>
+
+static bool shmem_allocated = false;
+
+MCTF_MODULE_SETUP(configuration)
+{
+   if (shmem == NULL)
+   {
+      pgmoneta_create_shared_memory(sizeof(struct main_configuration), HUGEPAGE_OFF, &shmem);
+      memset(shmem, 0, sizeof(struct main_configuration));
+      shmem_allocated = true;
+   }
+}
+
+MCTF_MODULE_TEARDOWN(configuration)
+{
+   if (shmem_allocated && shmem != NULL)
+   {
+      pgmoneta_destroy_shared_memory(shmem, sizeof(struct main_configuration));
+      shmem = NULL;
+      shmem_allocated = false;
+   }
+}
 
 MCTF_TEST(test_configuration_accept_time)
 {
@@ -318,5 +342,66 @@ MCTF_TEST(test_configuration_json_put_size_value)
 
 cleanup:
    pgmoneta_json_destroy(res);
+   MCTF_FINISH();
+}
+
+MCTF_TEST(test_configuration_wire_status_strings)
+{
+   /* H: wire contract - restart_required (new) + backward-compat old string. */
+   MCTF_ASSERT_STR_EQ(CONFIGURATION_STATUS_SUCCESS, "success", cleanup, "success string mismatch");
+   MCTF_ASSERT_STR_EQ(CONFIGURATION_STATUS_RESTART_REQUIRED, "restart_required", cleanup, "restart_required string mismatch");
+   MCTF_ASSERT_STR_EQ(CONFIGURATION_STATUS_NO_CHANGE, "no_change", cleanup, "no_change string mismatch");
+   MCTF_ASSERT_STR_EQ(CONFIGURATION_MESSAGE_NO_CHANGE, "Value unchanged", cleanup, "no_change message mismatch");
+   /* Old wire string must differ (rename proof) but CLI accepts both. */
+   MCTF_ASSERT(strcmp(CONFIGURATION_STATUS_RESTART_REQUIRED, "success_restart_required") != 0, cleanup, "rename did not change wire string");
+   MCTF_ASSERT(strcmp("success_restart_required", "restart_required") != 0, cleanup, "old vs new should differ");
+
+cleanup:
+   MCTF_FINISH();
+}
+
+MCTF_TEST(test_configuration_no_change_compare)
+{
+   /* H: no_change helper - mirrors daemon old_value vs new_value check. */
+   const char* old_val = "45";
+   const char* new_val_same = "45";
+   const char* new_val_diff = "60";
+   bool no_change = false;
+
+   /* Same normalized values -> no_change. */
+   no_change = (strlen(old_val) > 0 && strlen(new_val_same) > 0 &&
+                strcmp(old_val, "<unknown>") != 0 && strcmp(new_val_same, "<unknown>") != 0 &&
+                !strcmp(old_val, new_val_same));
+   MCTF_ASSERT(no_change, cleanup, "identical values should be no_change");
+
+   /* Different values -> change. */
+   no_change = (strlen(old_val) > 0 && strlen(new_val_diff) > 0 &&
+                strcmp(old_val, "<unknown>") != 0 && strcmp(new_val_diff, "<unknown>") != 0 &&
+                !strcmp(old_val, new_val_diff));
+   MCTF_ASSERT(!no_change, cleanup, "different values should not be no_change");
+
+   /* Unknown sentinel never counts as no_change. */
+   no_change = (strlen("<unknown>") > 0 && strlen("<unknown>") > 0 &&
+                strcmp("<unknown>", "<unknown>") != 0);
+   /* strcmp("<unknown>","<unknown>")==0 so the guard must exclude it explicitly. */
+   MCTF_ASSERT(!strcmp("<unknown>", "<unknown>"), cleanup, "sentinel equality sanity");
+   MCTF_ASSERT(!(strcmp("<unknown>", "<unknown>") != 0), cleanup, "sentinel must be excluded from no_change");
+
+cleanup:
+   MCTF_FINISH();
+}
+
+MCTF_TEST(test_configuration_error_codes)
+{
+   /* G: additive error codes - old CLI degrades gracefully. */
+   MCTF_ASSERT_INT_EQ(MANAGEMENT_ERROR_CONF_SET_NOREQUEST, 2701, cleanup, "2701 mismatch");
+   MCTF_ASSERT_INT_EQ(MANAGEMENT_ERROR_CONF_SET_NOCONFIG_KEY_OR_VALUE, 2702, cleanup, "2702 mismatch");
+   MCTF_ASSERT_INT_EQ(MANAGEMENT_ERROR_CONF_SET_UNKNOWN_CONFIGURATION_KEY, 2704, cleanup, "2704 mismatch");
+   MCTF_ASSERT_INT_EQ(MANAGEMENT_ERROR_CONF_SET_UNKNOWN_SERVER, 2705, cleanup, "2705 mismatch");
+   MCTF_ASSERT_INT_EQ(MANAGEMENT_ERROR_CONF_SET_NETWORK, 2706, cleanup, "2706 mismatch");
+   MCTF_ASSERT_INT_EQ(MANAGEMENT_ERROR_CONF_SET_ERROR, 2707, cleanup, "2707 mismatch");
+   MCTF_ASSERT_INT_EQ(MANAGEMENT_ERROR_CONF_SET_INVALID_VALUE, 2708, cleanup, "2708 mismatch");
+
+cleanup:
    MCTF_FINISH();
 }

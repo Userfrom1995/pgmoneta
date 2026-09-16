@@ -138,9 +138,12 @@ extern "C" {
 #define CONFIGURATION_RESPONSE_NEW_VALUE        "new_value"
 #define CONFIGURATION_RESPONSE_RESTART_REQUIRED "restart_required"
 #define CONFIGURATION_STATUS_SUCCESS            "success"
-#define CONFIGURATION_STATUS_RESTART_REQUIRED   "success_restart_required"
+#define CONFIGURATION_STATUS_RESTART_REQUIRED   "restart_required"
+#define CONFIGURATION_STATUS_NO_CHANGE          "no_change"
 #define CONFIGURATION_MESSAGE_SUCCESS           "Configuration change applied successfully"
 #define CONFIGURATION_MESSAGE_RESTART_REQUIRED  "Configuration change requires restart. Current values preserved."
+#define CONFIGURATION_MESSAGE_NO_CHANGE         "Value unchanged"
+#define CONFIGURATION_MESSAGE_INVALID_VALUE     "Invalid value for configuration key"
 
 /**
  * @struct config_key_info

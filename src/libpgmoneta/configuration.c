@@ -101,6 +101,9 @@ static void validate_event_backend(struct main_configuration* config);
 static const char* ev_backend_to_string(ev_backend_t backend);
 
 static bool transfer_configuration(struct main_configuration* config, struct main_configuration* reload);
+static bool check_restart_required(struct main_configuration* config, struct main_configuration* reload);
+static bool is_same_server(struct server* dst, struct server* src);
+static int restart_server(struct server* new_srv, struct server* current_srv);
 static int copy_server(struct server* dst, struct server* src);
 static void copy_user(struct user* dst, struct user* src);
 static int restart_bool(char* name, bool e, bool n);
@@ -949,11 +952,12 @@ pgmoneta_read_main_configuration(void* shm, char* filename)
                   if (pgmoneta_compare_string(section, "pgmoneta"))
                   {
                      max = strlen(value);
-                     if (max > MISC_LENGTH - 1)
+                     if (max > MAX_PATH - 1)
                      {
-                        max = MISC_LENGTH - 1;
+                        max = MAX_PATH - 1;
                      }
                      memcpy(config->pidfile, value, max);
+                     config->pidfile[max] = '\0';
                   }
                   else
                   {
@@ -4053,10 +4057,21 @@ pgmoneta_conf_set(SSL* ssl, int client_fd, uint8_t compression, uint8_t encrypti
       goto error;
    }
 
+   memset(&key_info, 0, sizeof(key_info));
    if (!is_valid_config_key(config_key, &key_info))
    {
-      ec = MANAGEMENT_ERROR_CONF_SET_ERROR;
-      pgmoneta_log_error("Conf Set: Invalid config key format: %s", config_key);
+      /* Distinguish unknown server (2705) from unknown key/format (2704).
+       * Server-not-found leaves section_type==1 with context set. */
+      if (key_info.section_type == 1)
+      {
+         ec = MANAGEMENT_ERROR_CONF_SET_UNKNOWN_SERVER;
+         pgmoneta_log_error("Conf Set: Unknown server in configuration key: %s (%d)", config_key, MANAGEMENT_ERROR_CONF_SET_UNKNOWN_SERVER);
+      }
+      else
+      {
+         ec = MANAGEMENT_ERROR_CONF_SET_UNKNOWN_CONFIGURATION_KEY;
+         pgmoneta_log_error("Conf Set: Unknown configuration key: %s (%d)", config_key, MANAGEMENT_ERROR_CONF_SET_UNKNOWN_CONFIGURATION_KEY);
+      }
       goto error;
    }
 
@@ -4068,11 +4083,27 @@ pgmoneta_conf_set(SSL* ssl, int client_fd, uint8_t compression, uint8_t encrypti
    }
 
    // Apply configuration change
-   if (apply_configuration(config_key, config_value, &key_info, restart_required))
    {
-      ec = MANAGEMENT_ERROR_CONF_SET_ERROR;
-      pgmoneta_log_error("Conf Set: Failed to apply configuration change %s=%s", config_key, config_value);
-      goto error;
+      int apply_rc = apply_configuration(config_key, config_value, &key_info, restart_required);
+      if (apply_rc)
+      {
+         if (apply_rc == 1)
+         {
+            ec = MANAGEMENT_ERROR_CONF_SET_UNKNOWN_CONFIGURATION_KEY;
+            pgmoneta_log_error("Conf Set: Unknown configuration key: %s (%d)", config_key, MANAGEMENT_ERROR_CONF_SET_UNKNOWN_CONFIGURATION_KEY);
+         }
+         else if (apply_rc == 2)
+         {
+            ec = MANAGEMENT_ERROR_CONF_SET_INVALID_VALUE;
+            pgmoneta_log_error("Conf Set: Invalid value for configuration key '%s': %s (%d)", config_key, config_value, MANAGEMENT_ERROR_CONF_SET_INVALID_VALUE);
+         }
+         else
+         {
+            ec = MANAGEMENT_ERROR_CONF_SET_ERROR;
+            pgmoneta_log_error("Conf Set: Failed to apply configuration change %s=%s", config_key, config_value);
+         }
+         goto error;
+      }
    }
 
    // Create response
@@ -4101,6 +4132,19 @@ pgmoneta_conf_set(SSL* ssl, int client_fd, uint8_t compression, uint8_t encrypti
       pgmoneta_json_put(response, CONFIGURATION_RESPONSE_RESTART_REQUIRED, (uintptr_t)true, ValueBool);
 
       pgmoneta_log_info("Conf Set: Restart required for %s=%s. Current value: %s", config_key, config_value, old_value);
+   }
+   else if (strlen(old_value) > 0 && strlen(new_value) > 0 &&
+            strcmp(old_value, "<unknown>") && strcmp(new_value, "<unknown>") &&
+            !strcmp(old_value, new_value))
+   {
+      // No change - requested value already active (mirror pgexporter no_change)
+      pgmoneta_json_put(response, CONFIGURATION_RESPONSE_STATUS, (uintptr_t)CONFIGURATION_STATUS_NO_CHANGE, ValueString);
+      pgmoneta_json_put(response, CONFIGURATION_RESPONSE_MESSAGE, (uintptr_t)CONFIGURATION_MESSAGE_NO_CHANGE, ValueString);
+      pgmoneta_json_put(response, CONFIGURATION_RESPONSE_CONFIG_KEY, (uintptr_t)config_key, ValueString);
+      pgmoneta_json_put(response, CONFIGURATION_RESPONSE_OLD_VALUE, (uintptr_t)old_value, ValueString);
+      pgmoneta_json_put(response, CONFIGURATION_RESPONSE_NEW_VALUE, (uintptr_t)new_value, ValueString);
+      pgmoneta_json_put(response, CONFIGURATION_RESPONSE_RESTART_REQUIRED, (uintptr_t)false, ValueBool);
+      pgmoneta_log_info("Conf Set: %s is already %s", config_key, old_value);
    }
    else
    {
@@ -4322,8 +4366,10 @@ apply_configuration(char* config_key, char* config_value,
                     bool* restart_required)
 {
    struct main_configuration* current_config;
-   struct main_configuration* temp_config;
+   struct main_configuration* temp_config = NULL;
    size_t config_size = 0;
+   /* 0=success, 1=unknown key (2704), 2=invalid value (2708), 3=generic (2707). */
+   int apply_rc = 0;
 
    // Initialize restart flag
    *restart_required = false;
@@ -4335,6 +4381,7 @@ apply_configuration(char* config_key, char* config_value,
    config_size = sizeof(struct main_configuration);
    if (pgmoneta_create_shared_memory(config_size, HUGEPAGE_OFF, (void**)&temp_config))
    {
+      apply_rc = 3;
       goto error;
    }
 
@@ -4348,8 +4395,14 @@ apply_configuration(char* config_key, char* config_value,
    switch (key_info->section_type)
    {
       case 0: // Main configuration
-         if (apply_main_configuration(temp_config, NULL, PGMONETA_MAIN_INI_SECTION, key_info->key, config_value))
+         apply_rc = apply_main_configuration(temp_config, NULL, PGMONETA_MAIN_INI_SECTION, key_info->key, config_value);
+         if (apply_rc)
          {
+            /* 1=unknown key, 2=invalid value; preserve for 2704/2708 mapping. */
+            if (apply_rc != 1 && apply_rc != 2)
+            {
+               apply_rc = 3;
+            }
             goto error;
          }
          break;
@@ -4360,8 +4413,13 @@ apply_configuration(char* config_key, char* config_value,
          {
             if (!strncmp(temp_config->common.servers[i].name, key_info->context, MISC_LENGTH))
             {
-               if (apply_main_configuration(temp_config, &temp_config->common.servers[i], key_info->context, key_info->key, config_value))
+               apply_rc = apply_main_configuration(temp_config, &temp_config->common.servers[i], key_info->context, key_info->key, config_value);
+               if (apply_rc)
                {
+                  if (apply_rc != 1 && apply_rc != 2)
+                  {
+                     apply_rc = 3;
+                  }
                   goto error;
                }
                break;
@@ -4372,6 +4430,7 @@ apply_configuration(char* config_key, char* config_value,
 
       default:
          pgmoneta_log_error("Unknown section type: %d", key_info->section_type);
+         apply_rc = 3;
          goto error;
    }
 
@@ -4379,27 +4438,30 @@ apply_configuration(char* config_key, char* config_value,
    if (pgmoneta_validate_main_configuration(temp_config))
    {
       pgmoneta_log_error("Configuration validation failed for %s = %s", config_key, config_value);
+      apply_rc = 3;
       goto error;
    }
 
-   // Check if restart is required by comparing configurations
+   /* transfer_configuration internally calls check_restart_required and
+    * returns true if a restart is needed (no changes applied in that case).
+    * When restart is not required, it applies all changes to the running config.
+    */
    *restart_required = transfer_configuration(current_config, temp_config);
 
    if (*restart_required)
    {
       pgmoneta_log_info("Configuration change %s = %s requires restart - changes not applied", config_key, config_value);
-      // Don't apply changes if restart is required
    }
    else
    {
-      // Apply the changes for real
-      transfer_configuration(current_config, temp_config);
       pgmoneta_log_info("Configuration change %s = %s applied successfully", config_key, config_value);
    }
 
    // Clean up
    if (pgmoneta_destroy_shared_memory((void*)temp_config, config_size))
    {
+      apply_rc = 3;
+      temp_config = NULL;
       goto error;
    }
 
@@ -4410,7 +4472,7 @@ error:
    {
       pgmoneta_destroy_shared_memory((void*)temp_config, config_size);
    }
-   return 1;
+   return apply_rc != 0 ? apply_rc : 3;
 }
 
 static int
@@ -4418,6 +4480,7 @@ apply_main_configuration(struct main_configuration* config, struct server* srv, 
 {
    size_t max;
    bool unknown = false;
+   bool invalid_value = false;
 
    // Server-specific configuration
    if (srv != NULL)
@@ -4436,7 +4499,7 @@ apply_main_configuration(struct main_configuration* config, struct server* srv, 
       {
          if (as_int(value, &srv->port))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "user"))
@@ -4463,7 +4526,7 @@ apply_main_configuration(struct main_configuration* config, struct server* srv, 
       {
          if (as_create_slot(value, &srv->create_slot))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "follow"))
@@ -4480,14 +4543,14 @@ apply_main_configuration(struct main_configuration* config, struct server* srv, 
       {
          if (as_int(value, &srv->workers))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "max_rate"))
       {
          if (as_int(value, &srv->max_rate))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "retention"))
@@ -4498,7 +4561,7 @@ apply_main_configuration(struct main_configuration* config, struct server* srv, 
          srv->retention_years = -1;
          if (as_retention(value, &srv->retention_days, &srv->retention_weeks, &srv->retention_months, &srv->retention_years))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "progress"))
@@ -4534,35 +4597,35 @@ apply_main_configuration(struct main_configuration* config, struct server* srv, 
       {
          if (as_int(value, &config->metrics))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "nagios"))
       {
          if (as_int(value, &config->nagios))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "console"))
       {
          if (as_int(value, &config->console))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "management"))
       {
          if (as_int(value, &config->management))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "workers"))
       {
          if (as_int(value, &config->workers))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "log_level"))
@@ -4591,7 +4654,7 @@ apply_main_configuration(struct main_configuration* config, struct server* srv, 
       {
          if (as_int(value, &config->compression_level))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "retention"))
@@ -4602,42 +4665,42 @@ apply_main_configuration(struct main_configuration* config, struct server* srv, 
          config->retention_years = -1;
          if (as_retention(value, &config->retention_days, &config->retention_weeks, &config->retention_months, &config->retention_years))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "max_rate"))
       {
          if (as_int(value, &config->max_rate))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "verification"))
       {
          if (as_seconds(value, &config->verification, PGMONETA_TIME_DISABLED))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "blocking_timeout"))
       {
          if (as_seconds(value, &config->blocking_timeout, PGMONETA_TIME_SEC(DEFAULT_BLOCKING_TIMEOUT)))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "metrics_cache_max_age"))
       {
          if (as_seconds(value, &config->metrics_cache_max_age, PGMONETA_TIME_DISABLED))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "log_rotation_age"))
       {
          if (as_seconds(value, &config->common.log_rotation_age, PGMONETA_TIME_DISABLED))
          {
-            unknown = true;
+            invalid_value = true;
          }
       }
       else if (pgmoneta_compare_string(key, "progress"))
@@ -4656,7 +4719,7 @@ apply_main_configuration(struct main_configuration* config, struct server* srv, 
          int t = as_ev_backend(value);
          if (t < 0)
          {
-            unknown = true;
+            invalid_value = true;
          }
          else
          {
@@ -4667,6 +4730,12 @@ apply_main_configuration(struct main_configuration* config, struct server* srv, 
       {
          unknown = true;
       }
+   }
+
+   if (invalid_value)
+   {
+      pgmoneta_log_error("Invalid value for configuration key: %s=%s", key, value);
+      return 2;
    }
 
    if (unknown)
@@ -6275,62 +6344,464 @@ ev_backend_to_string(ev_backend_t backend)
    }
 }
 
+/**
+ * Check if any structural parameter requires a restart.
+ * This function is pure in the sense that it performs NO CONFIGURATION
+ * MUTATION (no memcpy/memset/assignment, no atomic_init, no stop_logging,
+ * no sd_notify); diagnostic logging via the restart_* helpers is allowed.
+ *
+ * @param config The current running configuration
+ * @param reload The new configuration to be applied
+ * @return True if restart is required, false otherwise
+ */
 static bool
-transfer_configuration(struct main_configuration* config, struct main_configuration* reload)
+check_restart_required(struct main_configuration* config, struct main_configuration* reload)
+{
+   bool restart = false;
+
+   /* Network binding - host and all ports require restart */
+   if (restart_string("host", config->host, reload->host))
+   {
+      restart = true;
+   }
+   if (restart_int("metrics", config->metrics, reload->metrics))
+   {
+      restart = true;
+   }
+   if (restart_int("nagios", config->nagios, reload->nagios))
+   {
+      restart = true;
+   }
+   if (restart_int("management", config->management, reload->management))
+   {
+      restart = true;
+   }
+   if (restart_int("console", config->console, reload->console))
+   {
+      restart = true;
+   }
+
+   /* Cache infrastructure */
+   if (restart_int("metrics_cache_max_size", config->metrics_cache_max_size, reload->metrics_cache_max_size))
+   {
+      restart = true;
+   }
+
+   if (restart_string("base_dir", config->base_dir, reload->base_dir))
+   {
+      restart = true;
+   }
+
+   /* create_slot OR-policy (main.c): either level toggles slot creation, so gate both. */
+   if (restart_int("create_slot", config->create_slot, reload->create_slot))
+   {
+      restart = true;
+   }
+
+   /* Storage engine */
+   if (restart_int("storage_engine", config->storage_engine, reload->storage_engine))
+   {
+      restart = true;
+   }
+
+   /* SSH */
+   if (restart_string("ssh_hostname", config->ssh_hostname, reload->ssh_hostname))
+   {
+      restart = true;
+   }
+   if (restart_string("ssh_username", config->ssh_username, reload->ssh_username))
+   {
+      restart = true;
+   }
+   if (restart_string("ssh_base_dir", config->ssh_base_dir, reload->ssh_base_dir))
+   {
+      restart = true;
+   }
+   if (restart_string("ssh_ciphers", config->ssh_ciphers, reload->ssh_ciphers))
+   {
+      restart = true;
+   }
+   if (restart_string("ssh_public_key_file", config->ssh_public_key_file, reload->ssh_public_key_file))
+   {
+      restart = true;
+   }
+   if (restart_string("ssh_private_key_file", config->ssh_private_key_file, reload->ssh_private_key_file))
+   {
+      restart = true;
+   }
+   if (restart_int("ssh_port", config->ssh_port, reload->ssh_port))
+   {
+      restart = true;
+   }
+
+   /* S3 anchors backup targets, so any change requires a restart */
+   if (restart_int("s3_port", config->s3.port, reload->s3.port))
+   {
+      restart = true;
+   }
+   if (restart_bool("s3_use_tls", config->s3.use_tls, reload->s3.use_tls))
+   {
+      restart = true;
+   }
+   if (restart_string("s3_storage_class", config->s3.storage_class, reload->s3.storage_class))
+   {
+      restart = true;
+   }
+   if (restart_string("s3_endpoint", config->s3.endpoint, reload->s3.endpoint))
+   {
+      restart = true;
+   }
+   if (restart_string("s3_region", config->s3.region, reload->s3.region))
+   {
+      restart = true;
+   }
+   if (restart_string("s3_access_key_id", config->s3.access_key_id, reload->s3.access_key_id))
+   {
+      restart = true;
+   }
+   if (restart_string("s3_secret_access_key", config->s3.secret_access_key, reload->s3.secret_access_key))
+   {
+      restart = true;
+   }
+   if (restart_string("s3_bucket", config->s3.bucket, reload->s3.bucket))
+   {
+      restart = true;
+   }
+   if (restart_string("s3_base_dir", config->s3.base_dir, reload->s3.base_dir))
+   {
+      restart = true;
+   }
+
+   /* Azure anchors backup targets, so any change requires a restart */
+   if (restart_string("azure_storage_account", config->azure_storage_account, reload->azure_storage_account))
+   {
+      restart = true;
+   }
+   if (restart_string("azure_container", config->azure_container, reload->azure_container))
+   {
+      restart = true;
+   }
+   if (restart_string("azure_shared_key", config->azure_shared_key, reload->azure_shared_key))
+   {
+      restart = true;
+   }
+   if (restart_string("azure_base_dir", config->azure_base_dir, reload->azure_base_dir))
+   {
+      restart = true;
+   }
+   if (restart_string("azure_endpoint", config->azure_endpoint, reload->azure_endpoint))
+   {
+      restart = true;
+   }
+   if (restart_int("azure_port", config->azure_port, reload->azure_port))
+   {
+      restart = true;
+   }
+   if (restart_bool("azure_use_tls", config->azure_use_tls, reload->azure_use_tls))
+   {
+      restart = true;
+   }
+
+   if (restart_string("workspace", config->workspace, reload->workspace))
+   {
+      restart = true;
+   }
+   /* retention_interval is dynamic: adopted live and applied via
+    * refresh_periodic_watchers() (sisters never gate refreshable intervals). */
+   if (restart_int("log_type", config->common.log_type, reload->common.log_type))
+   {
+      restart = true;
+   }
+
+   /* verification is dynamic: adopted live and applied via
+    * refresh_periodic_watchers() (sisters never gate refreshable intervals). */
+   restart_time("verification", config->verification, reload->verification, false);
+
+   /* TLS is kept gated: certificates are never adopted live */
+   if (restart_bool("tls", config->tls, reload->tls))
+   {
+      restart = true;
+   }
+   if (restart_string("tls_cert_file", config->tls_cert_file, reload->tls_cert_file))
+   {
+      restart = true;
+   }
+   if (restart_string("tls_key_file", config->tls_key_file, reload->tls_key_file))
+   {
+      restart = true;
+   }
+   if (restart_string("tls_ca_file", config->tls_ca_file, reload->tls_ca_file))
+   {
+      restart = true;
+   }
+   if (restart_string("metrics_cert_file", config->metrics_cert_file, reload->metrics_cert_file))
+   {
+      restart = true;
+   }
+   if (restart_string("metrics_key_file", config->metrics_key_file, reload->metrics_key_file))
+   {
+      restart = true;
+   }
+   if (restart_string("metrics_ca_file", config->metrics_ca_file, reload->metrics_ca_file))
+   {
+      restart = true;
+   }
+
+   /* The pidfile is set automatically, so an empty value means "unchanged" */
+   if (strcmp("", reload->pidfile))
+   {
+      if (restart_string("pidfile", config->pidfile, reload->pidfile))
+      {
+         restart = true;
+      }
+   }
+
+   if (restart_int("ev_backend", config->ev_backend, reload->ev_backend))
+   {
+      restart = true;
+   }
+   if (restart_int("hugepage", config->hugepage, reload->hugepage))
+   {
+      restart = true;
+   }
+   if (restart_int("direct_io", config->direct_io, reload->direct_io))
+   {
+      restart = true;
+   }
+   if (restart_int("update_process_title", config->update_process_title, reload->update_process_title))
+   {
+      restart = true;
+   }
+   if (restart_string("unix_socket_dir", config->common.unix_socket_dir, reload->common.unix_socket_dir))
+   {
+      restart = true;
+   }
+
+   /* A decreasing number of servers requires a restart */
+   if (config->common.number_of_servers > reload->common.number_of_servers)
+   {
+      if (restart_int("decreasing number of servers", config->common.number_of_servers, reload->common.number_of_servers))
+      {
+         restart = true;
+      }
+   }
+
+   /* Per-server structural checks on the overlapping servers */
+   for (int i = 0; i < reload->common.number_of_servers; i++)
+   {
+      if (i < config->common.number_of_servers)
+      {
+         if (restart_server(&reload->common.servers[i], &config->common.servers[i]))
+         {
+            restart = true;
+         }
+      }
+   }
+
+   return restart;
+}
+
+/**
+ * Check if two servers point to the same endpoint identity.
+ * @return True if host, port and username are identical
+ */
+static bool
+is_same_server(struct server* dst, struct server* src)
+{
+   if (strncmp(dst->host, src->host, MISC_LENGTH))
+   {
+      return false;
+   }
+   if (dst->port != src->port)
+   {
+      return false;
+   }
+   if (strncmp(dst->username, src->username, MAX_USERNAME_LENGTH))
+   {
+      return false;
+   }
+   return true;
+}
+
+/**
+ * Check if a server configuration change requires a restart.
+ * This function is PURE READ-ONLY: it never mutates either server.
+ * @param new_srv The reloaded server configuration
+ * @param current_srv The current running server configuration
+ * @return 1 when a restart is required, 0 otherwise
+ */
+static int
+restart_server(struct server* new_srv, struct server* current_srv)
 {
    bool changed = false;
 
+   if (restart_string("name", &current_srv->name[0], &new_srv->name[0]))
+   {
+      changed = true;
+   }
+   if (restart_string("host", &current_srv->host[0], &new_srv->host[0]))
+   {
+      changed = true;
+   }
+   if (restart_int("port", current_srv->port, new_srv->port))
+   {
+      changed = true;
+   }
+   if (restart_string("username", &current_srv->username[0], &new_srv->username[0]))
+   {
+      changed = true;
+   }
+   if (restart_string("workspace", &current_srv->workspace[0], &new_srv->workspace[0]))
+   {
+      changed = true;
+   }
+   /* create_slot OR-policy (main.c): either level toggles slot creation, so gate both. */
+   if (restart_int("create_slot", current_srv->create_slot, new_srv->create_slot))
+   {
+      changed = true;
+   }
+   if (restart_string("wal_slot", &current_srv->wal_slot[0], &new_srv->wal_slot[0]))
+   {
+      changed = true;
+   }
+   if (restart_string("follow", &current_srv->follow[0], &new_srv->follow[0]))
+   {
+      changed = true;
+   }
+   if (restart_string("wal_shipping", &current_srv->wal_shipping[0], &new_srv->wal_shipping[0]))
+   {
+      changed = true;
+   }
+   if (restart_int("s3_port", current_srv->s3.port, new_srv->s3.port) ||
+       restart_bool("s3_use_tls", current_srv->s3.use_tls, new_srv->s3.use_tls) ||
+       restart_string("s3_storage_class", current_srv->s3.storage_class,
+                      new_srv->s3.storage_class) ||
+       restart_string("s3_endpoint", current_srv->s3.endpoint, new_srv->s3.endpoint) ||
+       restart_string("s3_region", current_srv->s3.region, new_srv->s3.region) ||
+       restart_string("s3_access_key_id", current_srv->s3.access_key_id,
+                      new_srv->s3.access_key_id) ||
+       restart_string("s3_secret_access_key", current_srv->s3.secret_access_key,
+                      new_srv->s3.secret_access_key) ||
+       restart_string("s3_bucket", current_srv->s3.bucket, new_srv->s3.bucket) ||
+       restart_string("s3_base_dir", current_srv->s3.base_dir, new_srv->s3.base_dir))
+   {
+      changed = true;
+   }
+   if (restart_string("tls_cert_file", current_srv->tls_cert_file, new_srv->tls_cert_file))
+   {
+      changed = true;
+   }
+   if (restart_string("tls_key_file", current_srv->tls_key_file, new_srv->tls_key_file))
+   {
+      changed = true;
+   }
+   if (restart_string("tls_ca_file", current_srv->tls_ca_file, new_srv->tls_ca_file))
+   {
+      changed = true;
+   }
+
+   if (changed)
+   {
+      return 1;
+   }
+
+   return 0;
+}
+
+static bool
+transfer_configuration(struct main_configuration* config, struct main_configuration* reload)
+{
 #ifdef HAVE_SYSTEMD
    sd_notify(0, "RELOADING=1");
 #endif
 
-   if (restart_string("host", config->host, reload->host))
+   /* Check if any parameter requires a restart before applying any changes */
+   if (check_restart_required(config, reload))
    {
-      changed = true;
+      pgmoneta_log_warn("Configuration reload denied: restart required for one or more parameters. Running state preserved.");
+#ifdef HAVE_SYSTEMD
+      sd_notify(0, "READY=1");
+#endif
+      return true;
    }
-   config->metrics = reload->metrics;
-   config->console = reload->console;
 
-   if (restart_time("metrics_cache_max_age", config->metrics_cache_max_age, reload->metrics_cache_max_age, false))
+   /* Pure identity pre-check before ANY mutation: a mismatch here can still
+    * honestly report the running state as preserved. */
+   for (int i = 0; i < reload->common.number_of_servers && i < config->common.number_of_servers; i++)
    {
-      changed = true;
+      if (config->common.servers[i].name[0] != '\0' && !is_same_server(&config->common.servers[i], &reload->common.servers[i]))
+      {
+         pgmoneta_log_warn("Configuration reload denied: server identity changed. Running state preserved.");
+#ifdef HAVE_SYSTEMD
+         sd_notify(0, "READY=1");
+#endif
+         return true;
+      }
    }
+
+   /* No restart required: apply all changes to the shared memory.
+    * Structural parameters (host, ports, base_dir, workspace, TLS, storage
+    * engine, SSH, S3, Azure, etc.) are safe to copy here because
+    * check_restart_required() above verified they are unchanged.
+    */
+
+   /* Network binding (verified unchanged above) */
+   memcpy(config->host, reload->host, MISC_LENGTH);
+   config->metrics = reload->metrics;
+   config->nagios = reload->nagios;
+   config->console = reload->console;
+   config->management = reload->management;
 
    memcpy(&config->metrics_cache_max_age, &reload->metrics_cache_max_age, sizeof(config->metrics_cache_max_age));
-   if (restart_int("metrics_cache_max_size", config->metrics_cache_max_size, reload->metrics_cache_max_size))
-   {
-      changed = true;
-   }
-   config->management = reload->management;
-   if (restart_string("base_dir", config->base_dir, reload->base_dir))
-   {
-      changed = true;
-   }
+   config->metrics_cache_max_size = reload->metrics_cache_max_size;
+
+   memcpy(config->base_dir, reload->base_dir, MAX_PATH);
+
    config->create_slot = reload->create_slot;
    config->compression_type = reload->compression_type;
    config->compression_level = reload->compression_level;
-   if (restart_string("workspace", config->workspace, reload->workspace))
-   {
-      changed = true;
-   }
+   /* encryption is dynamic (int, pgmoneta.h:423, parsed :1756): per-run reads justify live adopt. */
+   config->common.encryption = reload->common.encryption;
+
+   /* Storage engine (verified unchanged above) */
+   config->storage_engine = reload->storage_engine;
+
+   /* SSH (verified unchanged above) */
+   memcpy(config->ssh_hostname, reload->ssh_hostname, MISC_LENGTH);
+   memcpy(config->ssh_username, reload->ssh_username, MISC_LENGTH);
+   memcpy(config->ssh_base_dir, reload->ssh_base_dir, MAX_PATH);
+   memcpy(config->ssh_ciphers, reload->ssh_ciphers, MISC_LENGTH);
+   memcpy(config->ssh_public_key_file, reload->ssh_public_key_file, MAX_PATH);
+   memcpy(config->ssh_private_key_file, reload->ssh_private_key_file, MAX_PATH);
+   config->ssh_port = reload->ssh_port;
+
+   /* S3 (verified unchanged above) */
+   memcpy(&config->s3, &reload->s3, sizeof(config->s3));
+
+   /* Azure (verified unchanged above) */
+   memcpy(config->azure_storage_account, reload->azure_storage_account, MISC_LENGTH);
+   memcpy(config->azure_container, reload->azure_container, MISC_LENGTH);
+   memcpy(config->azure_shared_key, reload->azure_shared_key, MISC_LENGTH);
+   memcpy(config->azure_base_dir, reload->azure_base_dir, MAX_PATH);
+   memcpy(config->azure_endpoint, reload->azure_endpoint, MISC_LENGTH);
+   config->azure_port = reload->azure_port;
+   config->azure_use_tls = reload->azure_use_tls;
+
+   memcpy(config->workspace, reload->workspace, MAX_PATH);
+
    config->retention_days = reload->retention_days;
    config->retention_weeks = reload->retention_weeks;
    config->retention_months = reload->retention_months;
    config->retention_years = reload->retention_years;
-   if (restart_int("retention_interval", config->retention_interval, reload->retention_interval))
-   {
-      changed = true;
-   }
-   if (restart_int("log_type", config->common.log_type, reload->common.log_type))
-   {
-      changed = true;
-   }
+   config->retention_interval = reload->retention_interval;
+
+   config->common.log_type = reload->common.log_type;
    config->common.log_level = reload->common.log_level;
 
-   if (restart_time("verification", config->verification, reload->verification, true))
-   {
-      changed = true;
-   }
+   memcpy(&config->verification, &reload->verification, sizeof(config->verification));
+
+   /* log_line_prefix is dynamic: always adopted without log restart. */
+   memcpy(config->common.log_line_prefix, reload->common.log_line_prefix, MISC_LENGTH);
 
    if (strncmp(config->common.log_path, reload->common.log_path, MISC_LENGTH) ||
        config->common.log_rotation_size != reload->common.log_rotation_size ||
@@ -6342,91 +6813,54 @@ transfer_configuration(struct main_configuration* config, struct main_configurat
       config->common.log_rotation_size = reload->common.log_rotation_size;
       config->common.log_rotation_age = reload->common.log_rotation_age;
       config->common.log_mode = reload->common.log_mode;
-      memcpy(config->common.log_line_prefix, reload->common.log_line_prefix, MISC_LENGTH);
       memcpy(config->common.log_path, reload->common.log_path, MISC_LENGTH);
       pgmoneta_start_logging();
    }
 
-   if (restart_bool("tls", config->tls, reload->tls))
-   {
-      changed = true;
-   }
-   if (restart_string("tls_cert_file", config->tls_cert_file, reload->tls_cert_file))
-   {
-      changed = true;
-   }
-   if (restart_string("tls_key_file", config->tls_key_file, reload->tls_key_file))
-   {
-      changed = true;
-   }
-   if (restart_string("tls_ca_file", config->tls_ca_file, reload->tls_ca_file))
-   {
-      changed = true;
-   }
-   if (restart_string("metrics_cert_file", config->metrics_cert_file, reload->metrics_cert_file))
-   {
-      changed = true;
-   }
-   if (restart_string("metrics_key_file", config->metrics_key_file, reload->metrics_key_file))
-   {
-      changed = true;
-   }
-   if (restart_string("metrics_ca_file", config->metrics_ca_file, reload->metrics_ca_file))
-   {
-      changed = true;
-   }
-
-   if (restart_time("blocking_timeout", config->blocking_timeout, reload->blocking_timeout, false))
-   {
-      changed = true;
-   }
+   /* TLS (gated above: copied only because verified unchanged) */
+   config->tls = reload->tls;
+   memcpy(config->tls_cert_file, reload->tls_cert_file, MAX_PATH);
+   memcpy(config->tls_key_file, reload->tls_key_file, MAX_PATH);
+   memcpy(config->tls_ca_file, reload->tls_ca_file, MAX_PATH);
+   memcpy(config->metrics_cert_file, reload->metrics_cert_file, MAX_PATH);
+   memcpy(config->metrics_key_file, reload->metrics_key_file, MAX_PATH);
+   memcpy(config->metrics_ca_file, reload->metrics_ca_file, MAX_PATH);
 
    memcpy(&config->blocking_timeout, &reload->blocking_timeout, sizeof(config->blocking_timeout));
-
-   if (restart_time("authentication_timeout", config->authentication_timeout, reload->authentication_timeout, false))
-   {
-      changed = true;
-   }
 
    memcpy(&config->authentication_timeout, &reload->authentication_timeout, sizeof(config->authentication_timeout));
 
    if (strcmp("", reload->pidfile))
    {
-      restart_string("pidfile", config->pidfile, reload->pidfile);
+      memcpy(config->pidfile, reload->pidfile, MAX_PATH);
    }
 
-   if (restart_int("ev_backend", config->ev_backend, reload->ev_backend))
-   {
-      changed = true;
-   }
+   config->ev_backend = reload->ev_backend;
    config->common.keep_alive = reload->common.keep_alive;
    config->common.nodelay = reload->common.nodelay;
    config->common.non_blocking = reload->common.non_blocking;
    config->backlog = reload->backlog;
-   if (restart_int("hugepage", config->hugepage, reload->hugepage))
-   {
-      changed = true;
-   }
-   if (restart_int("update_process_title", config->update_process_title, reload->update_process_title))
-   {
-      changed = true;
-   }
-   if (restart_string("unix_socket_dir", config->common.unix_socket_dir, reload->common.unix_socket_dir))
-   {
-      changed = true;
-   }
+   config->hugepage = reload->hugepage;
+   config->direct_io = reload->direct_io;
+   config->update_process_title = reload->update_process_title;
+   memcpy(config->common.unix_socket_dir, reload->common.unix_socket_dir, MISC_LENGTH);
 
-   for (int i = 0; i < NUMBER_OF_SERVERS; i++)
+   /* Servers: per-server identity was verified unchanged above, so only
+    * config fields are copied here. New servers (fresh slots) are adopted
+    * live; live runtime state is never overwritten (see copy_server).
+    * The copy below is unreachable on identity mismatch (pre-loop + gate
+    * above); a nonzero return here is logic drift, not a clean deny. */
+   for (int i = 0; i < reload->common.number_of_servers; i++)
    {
       if (copy_server(&config->common.servers[i], &reload->common.servers[i]))
       {
-         changed = true;
+         pgmoneta_log_fatal("Configuration reload: unreachable server identity mismatch (logic drift)");
+         return true;
       }
    }
-   if (restart_int("number_of_servers", config->common.number_of_servers, reload->common.number_of_servers))
-   {
-      changed = true;
-   }
+   config->common.number_of_servers = reload->common.number_of_servers;
+   memset(&config->common.servers[config->common.number_of_servers], 0,
+          sizeof(struct server) * (NUMBER_OF_SERVERS - config->common.number_of_servers));
 
    for (int i = 0; i < NUMBER_OF_USERS; i++)
    {
@@ -6444,85 +6878,68 @@ transfer_configuration(struct main_configuration* config, struct main_configurat
    config->progress = reload->progress;
    config->max_rate = reload->max_rate;
 
-   /* prometheus */
-   atomic_init(&config->common.prometheus.logging_info, 0);
-   atomic_init(&config->common.prometheus.logging_warn, 0);
-   atomic_init(&config->common.prometheus.logging_error, 0);
-   atomic_init(&config->common.prometheus.logging_fatal, 0);
-
 #ifdef HAVE_SYSTEMD
    sd_notify(0, "READY=1");
 #endif
 
-   return changed;
+   return false;
 }
 
 static int
 copy_server(struct server* dst, struct server* src)
 {
-   bool changed = false;
+   /* An endpoint identity change on a live server cannot be adopted without
+    * a restart. check_restart_required() flags this before any mutation;
+    * report restart-required here as well and leave the running state alone.
+    * Fresh (empty) slots carry no runtime state and are adopted live. */
+   if (dst->name[0] != '\0' && !is_same_server(dst, src))
+   {
+      return 1;
+   }
 
-   if (restart_string("name", &dst->name[0], &src->name[0]))
-   {
-      changed = true;
-   }
-   if (restart_string("host", &dst->host[0], &src->host[0]))
-   {
-      changed = true;
-   }
-   if (restart_int("port", dst->port, src->port))
-   {
-      changed = true;
-   }
-   if (restart_string("username", &dst->username[0], &src->username[0]))
-   {
-      changed = true;
-   }
-   if (restart_string("workspace", &dst->workspace[0], &src->workspace[0]))
-   {
-      changed = true;
-   }
+   /* Config fields only below. Live runtime state - online, primary, valid,
+    * wal_streaming, checksums, version info, operation counts, timelines,
+    * WAL position, active workflow flags, repository locks, extension info
+    * and the entire progress struct - is never overwritten. */
+   memcpy(&dst->name[0], &src->name[0], MISC_LENGTH);
+   memcpy(&dst->host[0], &src->host[0], MISC_LENGTH);
+   dst->port = src->port;
+   memcpy(&dst->username[0], &src->username[0], MAX_USERNAME_LENGTH);
+   memcpy(&dst->workspace[0], &src->workspace[0], MAX_PATH);
    dst->create_slot = src->create_slot;
-   if (restart_string("wal_slot", &dst->wal_slot[0], &src->wal_slot[0]))
-   {
-      changed = true;
-   }
-   if (restart_string("follow", &dst->follow[0], &src->follow[0]))
-   {
-      changed = true;
-   }
-   if (restart_string("wal_shipping", &dst->wal_shipping[0], &src->wal_shipping[0]))
-   {
-      changed = true;
-   }
-   if (restart_int("s3_port", dst->s3.port, src->s3.port) ||
-       restart_bool("s3_use_tls", dst->s3.use_tls, src->s3.use_tls) ||
-       restart_string("s3_storage_class", dst->s3.storage_class,
-                      src->s3.storage_class) ||
-       restart_string("s3_endpoint", dst->s3.endpoint, src->s3.endpoint) ||
-       restart_string("s3_region", dst->s3.region, src->s3.region) ||
-       restart_string("s3_access_key_id", dst->s3.access_key_id,
-                      src->s3.access_key_id) ||
-       restart_string("s3_secret_access_key", dst->s3.secret_access_key,
-                      src->s3.secret_access_key) ||
-       restart_string("s3_bucket", dst->s3.bucket, src->s3.bucket) ||
-       restart_string("s3_base_dir", dst->s3.base_dir, src->s3.base_dir))
-   {
-      changed = true;
-   }
+   memcpy(&dst->wal_slot[0], &src->wal_slot[0], MISC_LENGTH);
+   memcpy(&dst->follow[0], &src->follow[0], MISC_LENGTH);
+   memcpy(&dst->wal_shipping[0], &src->wal_shipping[0], MAX_PATH);
+   memcpy(&dst->s3, &src->s3, sizeof(struct s3_configuration));
 
    dst->number_of_hot_standbys = src->number_of_hot_standbys;
    for (int i = 0; i < src->number_of_hot_standbys; i++)
    {
       memcpy(&dst->hot_standby[i][0], &src->hot_standby[i][0], MAX_PATH);
    }
+   /* Clear stale tail beyond the new count. */
+   if (src->number_of_hot_standbys < NUMBER_OF_HOT_STANDBY)
+   {
+      memset(&dst->hot_standby[src->number_of_hot_standbys][0], 0,
+             sizeof(dst->hot_standby) - (size_t)src->number_of_hot_standbys * MAX_PATH);
+   }
    for (int i = 0; i < src->number_of_hot_standbys; i++)
    {
       memcpy(&dst->hot_standby_overrides[i][0], &src->hot_standby_overrides[i][0], MAX_PATH);
    }
+   if (src->number_of_hot_standbys < NUMBER_OF_HOT_STANDBY)
+   {
+      memset(&dst->hot_standby_overrides[src->number_of_hot_standbys][0], 0,
+             sizeof(dst->hot_standby_overrides) - (size_t)src->number_of_hot_standbys * MAX_PATH);
+   }
    for (int i = 0; i < src->number_of_hot_standbys; i++)
    {
       memcpy(&dst->hot_standby_tablespaces[i][0], &src->hot_standby_tablespaces[i][0], MAX_PATH);
+   }
+   if (src->number_of_hot_standbys < NUMBER_OF_HOT_STANDBY)
+   {
+      memset(&dst->hot_standby_tablespaces[src->number_of_hot_standbys][0], 0,
+             sizeof(dst->hot_standby_tablespaces) - (size_t)src->number_of_hot_standbys * MAX_PATH);
    }
    /* dst->cur_timeline = src->cur_timeline; */
    dst->retention_days = src->retention_days;
@@ -6536,31 +6953,19 @@ copy_server(struct server* dst, struct server* src)
    /* memcpy(&dst->current_wal_filename[0], &src->current_wal_filename[0], MISC_LENGTH); */
    /* memcpy(&dst->current_wal_lsn[0], &src->current_wal_lsn[0], MISC_LENGTH); */
    dst->workers = src->workers;
-   dst->progress = src->progress;
+   /* dst->progress is live runtime state (struct progress with atomics) -
+    * never overwrite it. The progress on/off switch is progress_enabled. */
+   dst->progress_enabled = src->progress_enabled;
    dst->max_rate = src->max_rate;
 
-   if (restart_string("tls_cert_file", dst->tls_cert_file, src->tls_cert_file))
-   {
-      changed = true;
-   }
-   if (restart_string("tls_key_file", dst->tls_key_file, src->tls_key_file))
-   {
-      changed = true;
-   }
-   if (restart_string("tls_ca_file", dst->tls_ca_file, src->tls_ca_file))
-   {
-      changed = true;
-   }
+   memcpy(&dst->tls_cert_file[0], &src->tls_cert_file[0], MAX_PATH);
+   memcpy(&dst->tls_key_file[0], &src->tls_key_file[0], MAX_PATH);
+   memcpy(&dst->tls_ca_file[0], &src->tls_ca_file[0], MAX_PATH);
 
    dst->number_of_extra = src->number_of_extra;
    for (int i = 0; i < MAX_EXTRA; i++)
    {
       memcpy(dst->extra[i], src->extra[i], MAX_EXTRA_PATH);
-   }
-
-   if (changed)
-   {
-      return 1;
    }
 
    return 0;

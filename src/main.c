@@ -117,9 +117,11 @@ static void valid_cb(void);
 static void wal_streaming_cb(void);
 static bool accept_fatal(int error);
 static void reload_configuration(bool* restart);
+static void start_periodic_watcher(struct periodic_watcher* watcher, bool* started, periodic_cb cb, int64_t timeout_ms, int64_t repeat_ms);
+static void stop_periodic_watcher(struct periodic_watcher* watcher, bool* started);
+static void refresh_periodic_watchers(void);
 static void service_reload_cb(void);
 static void reload_set_configuration(SSL* ssl, int client_fd, uint8_t compression, uint8_t encryption, struct json* payload);
-static bool reload_services_only(void);
 static void init_receivewals(void);
 static int init_receivewal(int server);
 static int init_replication_slots(void);
@@ -156,6 +158,16 @@ static int console_fds_length = -1;
 static struct accept_io io_management[MAX_FDS];
 static int* management_fds = NULL;
 static int management_fds_length = -1;
+
+static struct periodic_watcher retention;
+static struct periodic_watcher valid;
+static struct periodic_watcher wal_streaming;
+static struct periodic_watcher verification;
+
+static bool retention_started = false;
+static bool valid_started = false;
+static bool wal_streaming_started = false;
+static bool verification_started = false;
 
 static void
 start_mgt(void)
@@ -334,10 +346,6 @@ main(int argc, char** argv)
    bool console_started = false;
    pid_t pid, sid;
    struct signal_info signal_watcher[SIGNALS_NUMBER] = {0};
-   struct periodic_watcher retention;
-   struct periodic_watcher valid;
-   struct periodic_watcher wal_streaming;
-   struct periodic_watcher verification;
    size_t shmem_size;
    size_t prometheus_cache_shmem_size = 0;
    struct main_configuration* config = NULL;
@@ -933,21 +941,8 @@ main(int argc, char** argv)
    /* Start to retrieve WAL */
    init_receivewals();
 
-   /* Start to validate server configuration */
-   pgmoneta_periodic_init(&valid, valid_cb, 600 * 1000, 600 * 1000);
-   pgmoneta_periodic_start(&valid);
-
-   /* Start to verify WAL streaming */
-   pgmoneta_periodic_init(&wal_streaming, wal_streaming_cb, 60 * 1000, 60 * 1000);
-   pgmoneta_periodic_start(&wal_streaming);
-
-   /* Start backup retention policy */
-   pgmoneta_periodic_init(&retention, retention_cb, config->retention_interval * 1000, config->retention_interval * 1000);
-   pgmoneta_periodic_start(&retention);
-
-   /* Start SHA512 verification job */
-   pgmoneta_periodic_init(&verification, verification_cb, pgmoneta_time_convert(config->verification, FORMAT_TIME_S) * 1000, pgmoneta_time_convert(config->verification, FORMAT_TIME_S) * 1000);
-   pgmoneta_periodic_start(&verification);
+   /* (Re)start periodic watchers from the current configuration values */
+   refresh_periodic_watchers();
 
    pgmoneta_log_info("Started on %s", config->host);
    pgmoneta_log_debug("Management: %d", unix_management_socket);
@@ -1014,10 +1009,10 @@ main(int argc, char** argv)
    shutdown_console(true);
    shutdown_mgt(true);
 
-   pgmoneta_periodic_stop(&verification);
-   pgmoneta_periodic_stop(&retention);
-   pgmoneta_periodic_stop(&wal_streaming);
-   pgmoneta_periodic_stop(&valid);
+   stop_periodic_watcher(&verification, &verification_started);
+   stop_periodic_watcher(&retention, &retention_started);
+   stop_periodic_watcher(&wal_streaming, &wal_streaming_started);
+   stop_periodic_watcher(&valid, &valid_started);
 
    for (int i = 0; i < SIGNALS_NUMBER; i++)
    {
@@ -2608,113 +2603,13 @@ error:
    exit(1);
 }
 
-static bool
-reload_services_only(void)
-{
-   struct main_configuration* config;
-
-   config = (struct main_configuration*)shmem;
-
-   shutdown_metrics();
-   shutdown_nagios();
-
-   free(metrics_fds);
-   metrics_fds = NULL;
-   metrics_fds_length = 0;
-
-   if (config->metrics > 0)
-   {
-      /* Bind metrics socket */
-      if (pgmoneta_bind(config->host, config->metrics, &metrics_fds, &metrics_fds_length))
-      {
-         pgmoneta_log_fatal("Could not bind to %s:%d", config->host, config->metrics);
-         goto error;
-      }
-
-      if (metrics_fds_length > MAX_FDS)
-      {
-         pgmoneta_log_fatal("Too many descriptors %d", metrics_fds_length);
-         goto error;
-      }
-
-      start_metrics();
-
-      for (int i = 0; i < metrics_fds_length; i++)
-      {
-         pgmoneta_log_debug("Metrics: %d", *(metrics_fds + i));
-      }
-   }
-
-   shutdown_management(true);
-
-   free(management_fds);
-   management_fds = NULL;
-   management_fds_length = 0;
-
-   if (config->management > 0)
-   {
-      /* Bind management socket */
-      if (pgmoneta_bind(config->host, config->management, &management_fds, &management_fds_length))
-      {
-         pgmoneta_log_fatal("Could not bind to %s:%d", config->host, config->management);
-         goto error;
-      }
-
-      if (management_fds_length > MAX_FDS)
-      {
-         pgmoneta_log_fatal("Too many descriptors %d", management_fds_length);
-         goto error;
-      }
-
-      start_management();
-
-      for (int i = 0; i < management_fds_length; i++)
-      {
-         pgmoneta_log_debug("Remote management: %d", *(management_fds + i));
-      }
-   }
-
-   shutdown_console(true);
-
-   free(console_fds);
-   console_fds = NULL;
-   console_fds_length = 0;
-
-   if (config->console > 0)
-   {
-      /* Bind console socket */
-      if (pgmoneta_bind(config->host, config->console, &console_fds, &console_fds_length))
-      {
-         pgmoneta_log_fatal("Could not bind to %s:%d", config->host, config->console);
-         goto error;
-      }
-
-      if (console_fds_length > MAX_FDS)
-      {
-         pgmoneta_log_fatal("Too many descriptors %d", console_fds_length);
-         goto error;
-      }
-
-      start_console();
-
-      for (int i = 0; i < console_fds_length; i++)
-      {
-         pgmoneta_log_debug("Console: %d", *(console_fds + i));
-      }
-   }
-
-   pgmoneta_log_info("conf set: Services restarted successfully");
-   return true;
-
-error:
-   return false;
-}
-
 static void
 service_reload_cb(void)
 {
-   pgmoneta_log_debug("pgmoneta: service restart requested");
-   reload_services_only();
+   pgmoneta_log_debug("pgmoneta: service reload requested (SIGUSR1)");
+   pgmoneta_stop_logging();
+   pgmoneta_start_logging();
+   refresh_periodic_watchers();
 }
 
 static void
@@ -2957,116 +2852,80 @@ accept_fatal(int error)
 }
 
 static void
-reload_configuration(bool* restart)
+start_periodic_watcher(struct periodic_watcher* watcher, bool* started, periodic_cb cb, int64_t timeout_ms, int64_t repeat_ms)
 {
-   int old_metrics;
-   int old_console;
-   int old_management;
+   if (started != NULL && *started)
+   {
+      stop_periodic_watcher(watcher, started);
+   }
+
+   if (pgmoneta_periodic_init(watcher, cb, timeout_ms, repeat_ms) != PGMONETA_EVENT_RC_OK)
+   {
+      memset(watcher, 0, sizeof(struct periodic_watcher));
+      *started = false;
+      return;
+   }
+
+   if (pgmoneta_periodic_start(watcher) != PGMONETA_EVENT_RC_OK)
+   {
+      memset(watcher, 0, sizeof(struct periodic_watcher));
+      *started = false;
+      return;
+   }
+
+   *started = true;
+}
+
+static void
+stop_periodic_watcher(struct periodic_watcher* watcher, bool* started)
+{
+   if (started == NULL || !*started)
+   {
+      return;
+   }
+
+   if (pgmoneta_periodic_stop(watcher) != PGMONETA_EVENT_RC_OK)
+   {
+      pgmoneta_log_warn("Unable to stop periodic watcher");
+   }
+
+   memset(watcher, 0, sizeof(struct periodic_watcher));
+   *started = false;
+}
+
+static void
+refresh_periodic_watchers(void)
+{
    struct main_configuration* config;
 
    config = (struct main_configuration*)shmem;
 
-   old_metrics = config->metrics;
-   old_console = config->console;
-   old_management = config->management;
+   stop_periodic_watcher(&retention, &retention_started);
+   stop_periodic_watcher(&verification, &verification_started);
+   stop_periodic_watcher(&valid, &valid_started);
+   stop_periodic_watcher(&wal_streaming, &wal_streaming_started);
 
+   /* Backup retention policy */
+   start_periodic_watcher(&retention, &retention_started, retention_cb, config->retention_interval * 1000, config->retention_interval * 1000);
+
+   /* SHA512 verification job */
+   start_periodic_watcher(&verification, &verification_started, verification_cb, pgmoneta_time_convert(config->verification, FORMAT_TIME_S) * 1000, pgmoneta_time_convert(config->verification, FORMAT_TIME_S) * 1000);
+
+   /* Server configuration validation */
+   start_periodic_watcher(&valid, &valid_started, valid_cb, 600 * 1000, 600 * 1000);
+
+   /* WAL streaming verification */
+   start_periodic_watcher(&wal_streaming, &wal_streaming_started, wal_streaming_cb, 60 * 1000, 60 * 1000);
+}
+
+static void
+reload_configuration(bool* restart)
+{
    pgmoneta_reload_configuration(restart);
 
-   if (old_metrics != config->metrics)
+   if (!*restart)
    {
-      shutdown_metrics();
-      shutdown_nagios();
-
-      free(metrics_fds);
-      metrics_fds = NULL;
-      metrics_fds_length = 0;
-
-      if (config->metrics > 0)
-      {
-         /* Bind metrics socket */
-         if (pgmoneta_bind(config->host, config->metrics, &metrics_fds, &metrics_fds_length))
-         {
-            pgmoneta_log_fatal("Could not bind to %s:%d", config->host, config->metrics);
-            exit(1);
-         }
-
-         if (metrics_fds_length > MAX_FDS)
-         {
-            pgmoneta_log_fatal("Too many descriptors %d", metrics_fds_length);
-            exit(1);
-         }
-
-         start_metrics();
-
-         for (int i = 0; i < metrics_fds_length; i++)
-         {
-            pgmoneta_log_debug("Metrics: %d", *(metrics_fds + i));
-         }
-      }
-   }
-
-   if (old_management != config->management)
-   {
-      shutdown_management(true);
-
-      free(management_fds);
-      management_fds = NULL;
-      management_fds_length = 0;
-
-      if (config->management > 0)
-      {
-         /* Bind management socket */
-         if (pgmoneta_bind(config->host, config->management, &management_fds, &management_fds_length))
-         {
-            pgmoneta_log_fatal("Could not bind to %s:%d", config->host, config->management);
-            exit(1);
-         }
-
-         if (management_fds_length > MAX_FDS)
-         {
-            pgmoneta_log_fatal("Too many descriptors %d", management_fds_length);
-            exit(1);
-         }
-
-         start_management();
-
-         for (int i = 0; i < management_fds_length; i++)
-         {
-            pgmoneta_log_debug("Remote management: %d", *(management_fds + i));
-         }
-      }
-   }
-
-   if (old_console != config->console)
-   {
-      shutdown_console(true);
-
-      free(console_fds);
-      console_fds = NULL;
-      console_fds_length = 0;
-
-      if (config->console > 0)
-      {
-         /* Bind console socket */
-         if (pgmoneta_bind(config->host, config->console, &console_fds, &console_fds_length))
-         {
-            pgmoneta_log_fatal("Could not bind to %s:%d", config->host, config->console);
-            exit(1);
-         }
-
-         if (console_fds_length > MAX_FDS)
-         {
-            pgmoneta_log_fatal("Too many descriptors %d", console_fds_length);
-            exit(1);
-         }
-
-         start_console();
-
-         for (int i = 0; i < console_fds_length; i++)
-         {
-            pgmoneta_log_debug("Console: %d", *(console_fds + i));
-         }
-      }
+      refresh_periodic_watchers();
    }
 
    return;

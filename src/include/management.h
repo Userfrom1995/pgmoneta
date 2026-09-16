@@ -379,6 +379,7 @@ extern "C" {
 #define MANAGEMENT_ERROR_CONF_SET_UNKNOWN_SERVER            2705
 #define MANAGEMENT_ERROR_CONF_SET_NETWORK                   2706
 #define MANAGEMENT_ERROR_CONF_SET_ERROR                     2707
+#define MANAGEMENT_ERROR_CONF_SET_INVALID_VALUE             2708
 
 #define MANAGEMENT_ERROR_MODE_NOSERVER                      2800
 #define MANAGEMENT_ERROR_MODE_NOFORK                        2801

@@ -145,6 +145,7 @@ static int initialize_loop_backend(void);
 
 static struct event_loop* loop = NULL;
 static bool context_is_set = false;
+static bool fallback_from_io_uring = false;
 static _Atomic(struct signal_watcher*) signal_watchers[PGMONETA_NSIG];
 static _Atomic(signal_cb) signal_callbacks[PGMONETA_NSIG];
 static volatile sig_atomic_t signal_pending[PGMONETA_NSIG] = {0};
@@ -203,6 +204,10 @@ setup_ops(void)
    }
 
    original_backend = backend_type;
+   if (fallback_from_io_uring)
+   {
+      original_backend = PGMONETA_EVENT_BACKEND_IO_URING;
+   }
 
    if (backend_type == PGMONETA_EVENT_BACKEND_AUTO)
    {
@@ -311,6 +316,7 @@ initialize_loop_backend(void)
    if (config != NULL && config->ev_backend == PGMONETA_EVENT_BACKEND_IO_URING)
    {
       pgmoneta_log_warn("io_uring backend initialization failed; falling back to epoll");
+      fallback_from_io_uring = true;
       config->ev_backend = PGMONETA_EVENT_BACKEND_EPOLL;
 
       if (setup_ops())
@@ -439,6 +445,11 @@ pgmoneta_event_loop_fork(void)
       sigaction(SIGTERM, &sa, NULL);
       sigaction(SIGINT, &sa, NULL);
       sigaction(SIGQUIT, &sa, NULL);
+      sigaction(SIGABRT, &sa, NULL);
+      sigaction(SIGSEGV, &sa, NULL);
+      sigaction(SIGBUS, &sa, NULL);
+      sigaction(SIGILL, &sa, NULL);
+      sigaction(SIGFPE, &sa, NULL);
    }
 
    rc = loop_fork();
@@ -919,9 +930,14 @@ pgmoneta_io_send(struct io_watcher* watcher, struct message* msg)
          {
             struct pollfd pfd = {.fd = fd, .events = POLLOUT};
             int sret = poll(&pfd, 1, 5000);
-            if (sret > 0)
+            if (sret > 0 && (pfd.revents & POLLOUT) && !(pfd.revents & (POLLERR | POLLHUP | POLLNVAL)))
             {
                continue;
+            }
+            if (sret > 0)
+            {
+               pgmoneta_log_error("pgmoneta_io_send: poll error on fd %d: revents 0x%x", fd, pfd.revents);
+               return PGMONETA_EVENT_RC_ERROR;
             }
             pgmoneta_log_error("pgmoneta_io_send: socket not writable on fd %d: %s", fd, strerror(errno));
             return PGMONETA_EVENT_RC_ERROR;

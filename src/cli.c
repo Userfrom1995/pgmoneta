@@ -859,11 +859,12 @@ username:
       if (password == NULL)
       {
 password:
-         if (password != NULL)
+         if (do_free && password != NULL)
          {
             free(password);
-            password = NULL;
          }
+         password = NULL;
+         do_free = false;
 
          printf("Password : ");
          password = pgmoneta_get_password();

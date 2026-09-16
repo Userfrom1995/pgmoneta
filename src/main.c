@@ -1031,11 +1031,11 @@ main(int argc, char** argv)
    free(console_fds);
    free(management_fds);
 
-   remove_pidfile();
-
    /* Signal workers before tearing down shmem they may still touch,
     * then reap them (bounded); only afterwards destroy shared memory. */
    terminate_children_and_wait(daemon || stop);
+
+   remove_pidfile();
 
    pgmoneta_stop_logging();
    pgmoneta_destroy_shared_memory(shmem, shmem_size);
@@ -2258,6 +2258,7 @@ accept_http_cb(struct io_watcher* watcher,
    struct sockaddr_in6 client_addr;
    socklen_t client_addr_length;
    int client_fd;
+   pid_t pid;
    struct accept_io* ai;
 
    ai = (struct accept_io*)watcher;
@@ -2288,7 +2289,14 @@ accept_http_cb(struct io_watcher* watcher,
       return;
    }
 
-   if (!fork())
+   pid = fork();
+   if (pid == -1)
+   {
+      pgmoneta_log_error("Could not fork process for %s: %s", title, strerror(errno));
+      pgmoneta_disconnect(client_fd);
+      return;
+   }
+   else if (pid == 0)
    {
       http_child_serve(client_fd, ai, title, cert_file, key_file, ca_file, serve_fn);
    }
@@ -2375,6 +2383,7 @@ accept_nagios_cb(struct io_watcher* watcher)
    struct sockaddr_in6 client_addr;
    socklen_t client_addr_length;
    int client_fd;
+   pid_t pid;
    struct main_configuration* config;
 
    config = (struct main_configuration*)shmem;
@@ -2419,7 +2428,14 @@ accept_nagios_cb(struct io_watcher* watcher)
       return;
    }
 
-   if (!fork())
+   pid = fork();
+   if (pid == -1)
+   {
+      pgmoneta_log_error("Could not fork process for nagios: %s", strerror(errno));
+      pgmoneta_disconnect(client_fd);
+      return;
+   }
+   else if (pid == 0)
    {
       if (main_loop)
       {
@@ -2446,6 +2462,7 @@ accept_management_cb(struct io_watcher* watcher)
    struct sockaddr_in6 client_addr;
    socklen_t client_addr_length;
    int client_fd;
+   pid_t pid;
    char address[INET6_ADDRSTRLEN];
    struct main_configuration* config;
 
@@ -2513,7 +2530,14 @@ accept_management_cb(struct io_watcher* watcher)
       pgmoneta_get_address((struct sockaddr*)&client_addr, (char*)&address, sizeof(address));
    }
 
-   if (!fork())
+   pid = fork();
+   if (pid == -1)
+   {
+      pgmoneta_log_error("Could not fork process for management: %s", strerror(errno));
+      pgmoneta_disconnect(client_fd);
+      return;
+   }
+   else if (pid == 0)
    {
       char* addr = NULL;
 
@@ -2712,7 +2736,15 @@ coredump_cb(void)
 static void
 retention_cb(void)
 {
-   if (!fork())
+   pid_t pid;
+
+   pid = fork();
+   if (pid == -1)
+   {
+      pgmoneta_log_error("Could not fork process for retention: %s", strerror(errno));
+      return;
+   }
+   else if (pid == 0)
    {
       pgmoneta_event_loop_fork();
       shutdown_ports(false);
@@ -2723,7 +2755,15 @@ retention_cb(void)
 static void
 verification_cb(void)
 {
-   if (!fork())
+   pid_t pid;
+
+   pid = fork();
+   if (pid == -1)
+   {
+      pgmoneta_log_error("Could not fork process for verification: %s", strerror(errno));
+      return;
+   }
+   else if (pid == 0)
    {
       pgmoneta_event_loop_fork();
       shutdown_ports(false);
@@ -2734,11 +2774,18 @@ verification_cb(void)
 static void
 valid_cb(void)
 {
+   pid_t pid;
    struct main_configuration* config;
 
    config = (struct main_configuration*)shmem;
 
-   if (!fork())
+   pid = fork();
+   if (pid == -1)
+   {
+      pgmoneta_log_error("Could not fork process for validation: %s", strerror(errno));
+      return;
+   }
+   else if (pid == 0)
    {
       pgmoneta_event_loop_fork();
       shutdown_ports(false);

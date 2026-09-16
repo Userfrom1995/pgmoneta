@@ -25,7 +25,7 @@ Supported options:
 
 * `auto`: Automatically select the platform default backend for the operating system (default). On Linux, selects `epoll`. On BSD/macOS systems, selects `kqueue`. `io_uring` is an opt-in backend that must be explicitly configured with `ev_backend = io_uring`.
 * `io_uring`: Linux asynchronous I/O interface using kernel submission and completion queues via `liburing >= 2.5`. This is an opt-in backend. If the kernel does not support the required operations, `pgmoneta` falls back to `epoll`.
-* `epoll`: Standard Linux I/O event notification facility via `epoll_create1(2)` and `epoll_wait(2)`.
+* `epoll`: Standard Linux I/O event notification facility via `epoll_create1(2)` and `epoll_pwait(2)` / `epoll_pwait2(2)`.
 * `kqueue`: Scalable kernel event notification mechanism available on FreeBSD, OpenBSD, and macOS via `kqueue(2)` and `kevent(2)`.
 
 **Backends**
